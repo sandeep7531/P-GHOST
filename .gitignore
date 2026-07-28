@@ -1,0 +1,85 @@
+# ============================================================
+# 🚫 GHOST — Git Ignore
+# ============================================================
+
+# Python
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+*.egg
+*.egg-info/
+.pytest_cache/
+
+# Node / Electron
+node_modules/
+out/
+dist/
+build/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.npm
+.yarn-integrity
+
+# Electron Vite
+.vite/
+electron-builder-cache/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon
+._*
+.Spotlight-V100
+.Trashes
+.fseventsd
+
+# IDE
+.vscode/
+!.vscode/settings.json
+!.vscode/extensions.json
+.idea/
+*.swp
+*.swo
+*~
+
+# Environment / secrets
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+
+# Testing / cache
+coverage/
+.nyc_output/
+*.cache
+
+# Model files (downloaded separately)
+*.gguf
+*.bin
+models/
+
+# Whisper cache
+.cache/whisper/
+~/.cache/
+
+# Session data (personal)
+data/
+sessions.db
+
+# Logs
+logs/
+*.log
+
+# Temporary
+*.tmp
+*.temp
+tmp/
+temp/
