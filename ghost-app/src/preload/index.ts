@@ -41,6 +41,9 @@ const api = {
   onClearContent: (callback: () => void): void => {
     ipcRenderer.on('clear-content', () => callback())
   },
+  onShowNextQuestion: (callback: () => void): void => {
+    ipcRenderer.on('show-next-question', () => callback())
+  },
   // AI Mode
   setAIMode: (mode: string): Promise<boolean> => ipcRenderer.invoke('set-ai-mode', mode),
   getAIMode: (): Promise<string> => ipcRenderer.invoke('get-ai-mode')

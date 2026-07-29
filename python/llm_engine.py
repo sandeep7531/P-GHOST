@@ -308,7 +308,7 @@ YOUR ANSWER:"""
 
         if question_type == "concept":
             return '\n'.join([
-                "FORMAT (ChatGPT-Style: Concept Explanation):",
+                "FORMAT (ChatGPT-Style: Concept + Optional Code):",
                 "",
                 "[Opening paragraph: 2-3 sentences explaining WHAT it is and its purpose]",
                 "",
@@ -317,14 +317,19 @@ YOUR ANSWER:"""
                 "- Characteristic 2 with brief explanation",
                 "- Characteristic 3 with brief explanation",
                 "",
-                "**Real-world example:**",
-                "[1-2 sentence concrete example or analogy]",
+                "**Code example (IF the concept is programming-related):**",
+                "```javascript",
+                "// Show a clear, working example of the concept",
+                "// This is REQUIRED for JS/React/programming topics",
+                "```",
                 "",
                 "**When to use:** [1 sentence practical guidance]",
                 "",
                 "RULES:",
                 "- Use bold for section headers",
-                "- Keep total answer 100-150 words"
+                "- If topic is technical/programming — ALWAYS include code example",
+                "- If topic is non-technical (like 'what is HTTP?') — code is optional",
+                "- Keep total answer 100-200 words"
             ])
 
         comparison_triggers = [
@@ -372,7 +377,10 @@ YOUR ANSWER:"""
                 "2. Then this happens...",
                 "3. Finally this results in...",
                 "",
-                "**Visual flow:** Use a code block showing Input -> Process -> Output",
+                "**Code example (IF programming topic — ALMOST ALWAYS REQUIRED):**",
+                "```javascript",
+                "// Working code showing HOW it works",
+                "```",
                 "",
                 "**Example scenario:**",
                 "[Concrete walk-through with real example]",
@@ -381,7 +389,8 @@ YOUR ANSWER:"""
                 "",
                 "RULES:",
                 "- Use numbered list for sequential steps",
-                "- Total under 200 words"
+                "- For programming topics: ALWAYS include code",
+                "- Total under 250 words"
             ])
 
         if question_type == "behavioral":
@@ -628,7 +637,95 @@ class GhostLLM:
             'exponential backoff', 'circuit breaker',
             'observer pattern', 'singleton',
             'polyfill', 'promise.all', 'promise.race',
-            'usereducer', 'useref', 'usecontext'
+            'usereducer', 'useref', 'usecontext',
+
+            # 🆕 More JS concepts
+            'hoisting', 'scope', 'variable scope', 'block scope', 'function scope',
+            'let', 'const', 'var', 'temporal dead zone',
+            'call', 'apply', 'bind', 'this binding',
+            'immediately invoked', 'immediately-invoked',
+            'promise chain', 'promise chaining', 'promise all',
+            'try catch', 'try/catch', 'error handling',
+            'json', 'json.parse', 'json.stringify',
+            'array method', 'array methods', 'map filter reduce',
+            'map', 'filter', 'reduce', 'foreach',
+            'object method', 'object.keys', 'object.values', 'object.entries',
+            'shallow copy', 'deep copy', 'clone',
+            'equality', 'strict equality', 'loose equality', '=== vs ==',
+
+            # 🆕 React-specific
+            'props', 'react props', 'component', 'react component',
+            'jsx', 'virtual dom', 'reconciliation',
+            'component lifecycle', 'lifecycle method',
+            'component did mount', 'componentdidmount',
+            'component did update', 'componentdidupdate',
+            'component will unmount', 'componentwillunmount',
+            'controlled component', 'uncontrolled component',
+            'controlled input', 'uncontrolled input',
+            'hoc', 'higher order component', 'higher-order component',
+            'render props', 'render prop',
+            'context api', 'react context', 'context provider',
+            'redux', 'redux toolkit', 'zustand', 'mobx',
+            'react memo', 'react.memo', 'memoization',
+            'lazy loading', 'react lazy', 'react.lazy',
+            'suspense', 'react suspense',
+            'error boundary', 'error boundaries',
+            'portal', 'react portal',
+            'fragment', 'react fragment',
+            'key prop', 'react key',
+            'state management', 'lifting state',
+            'reconciliation', 'diffing algorithm',
+
+            # 🆕 TypeScript
+            'typescript', 'type annotation', 'type alias',
+            'interface', 'generic', 'generics',
+            'union type', 'intersection type',
+            'utility types', 'partial', 'required', 'pick', 'omit',
+
+            # 🆕 CSS/Styling
+            'flexbox', 'grid', 'css grid',
+            'responsive design', 'media query',
+            'styled component', 'styled components',
+            'tailwind', 'css-in-js',
+
+            # 🆕 Design Patterns
+            'design pattern', 'design patterns',
+            'factory pattern', 'factory function',
+            'strategy pattern', 'adapter pattern',
+            'decorator pattern', 'proxy pattern',
+            'pub sub', 'pub/sub', 'publisher subscriber',
+
+            # 🆕 Data Structures & Algorithms
+            'linked list', 'binary tree', 'hash map', 'hash table',
+            'stack', 'queue', 'heap',
+            'sorting', 'quicksort', 'mergesort',
+            'searching', 'binary search',
+            'recursion', 'recursive',
+            'dynamic programming', 'memoization',
+
+            # 🆕 API/Networking
+            'rest api', 'rest', 'graphql', 'grpc',
+            'http', 'https', 'websocket',
+            'fetch', 'axios', 'ajax',
+            'cors', 'cross origin',
+            'authentication', 'jwt', 'oauth', 'token',
+            'session', 'cookie', 'localstorage',
+
+            # 🆕 Testing
+            'unit test', 'integration test', 'e2e test',
+            'jest', 'mocha', 'chai',
+            'react testing library', 'cypress', 'playwright',
+            'mock', 'stub', 'spy',
+
+            # 🆕 Common concepts
+            'immutability', 'mutability', 'pure function', 'side effect',
+            'functional programming', 'oop', 'object oriented',
+            'inheritance', 'composition', 'polymorphism', 'encapsulation',
+            'dependency injection', 'ioc',
+            'async programming', 'concurrency', 'parallelism',
+            'promise', 'observable', 'stream',
+            'garbage collection', 'memory management',
+            'performance optimization', 'lazy loading', 'code splitting'
         ]
         definition_triggers = ['what is', 'what are', 'explain', 'define',
                                'how does', 'what does', 'tell me about', 'describe']

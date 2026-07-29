@@ -4,19 +4,30 @@ import { useSessionStore } from './store/sessionStore'
 import MessageRenderer from './components/MessageRenderer'
 
 // ============================================================
-// 🎯 TYPES for messages from Python backend
+// 🎯 TYPES
 // ============================================================
 type WSMessage =
   | { type: 'connected'; message: string }
   | { type: 'listening' }
   | { type: 'transcript'; text: string; duration: number }
-  | { type: 'answer_start'; question: string; mode?: string }
+  | { type: 'answer_start'; question: string; mode?: string; engine?: string }
   | { type: 'answer_token'; token: string }
-  | { type: 'answer_done'; full_answer: string; duration: number; mode?: string; word_count?: number }
+  | { type: 'answer_done'; full_answer: string; duration: number; mode?: string; word_count?: number; engine?: string }
   | { type: 'error'; message: string }
 
+interface ConversationItem {
+  id: string
+  question: string
+  answer: string
+  timestamp: number
+  isStreaming: boolean
+  mode?: string
+  engine?: string
+  source: 'voice' | 'chat' | 'test' | 'edit'
+}
+
 // ============================================================
-// 🎨 GHOST OVERLAY
+// 🎨 GHOST OVERLAY (ChatGPT-Style History)
 // ============================================================
 function Overlay(): JSX.Element {
   const navigate = useNavigate()
@@ -24,45 +35,43 @@ function Overlay(): JSX.Element {
 
   const [connected, setConnected] = useState(false)
   const [status, setStatus] = useState<'idle' | 'listening' | 'thinking'>('idle')
-  const [transcript, setTranscript] = useState<string>('Waiting for interviewer to speak...')
-  const [answer, setAnswer] = useState<string>('')
   const [sessionTime, setSessionTime] = useState<string>('00:00')
   const [stealthOn, setStealthOn] = useState<boolean>(true)
   const [copyFeedback, setCopyFeedback] = useState<string>('')
   const [aiMode, setAIMode] = useState<'local' | 'hybrid' | 'cloud'>('hybrid')
 
-  // Edit mode
-  const [isEditing, setIsEditing] = useState<boolean>(false)
-  const [editedText, setEditedText] = useState<string>('')
+  // Conversation history
+  const [conversations, setConversations] = useState<ConversationItem[]>([])
+  const [newQuestionCount, setNewQuestionCount] = useState<number>(0)
 
   // Test box
   const [testQuestion, setTestQuestion] = useState<string>('')
   const [showTestBox, setShowTestBox] = useState<boolean>(true)
 
+  // Edit mode
+  const [editingId, setEditingId] = useState<string | null>(null)
+  const [editedText, setEditedText] = useState<string>('')
+
   // Shortcut states
   const [isPaused, setIsPaused] = useState<boolean>(false)
-  const [lastQuestion, setLastQuestion] = useState<string>('')
 
+  // Refs
   const wsRef = useRef<WebSocket | null>(null)
   const reconnectTimerRef = useRef<NodeJS.Timeout | null>(null)
   const sessionStartRef = useRef<number>(Date.now())
   const editTextareaRef = useRef<HTMLTextAreaElement | null>(null)
   const testTextareaRef = useRef<HTMLTextAreaElement | null>(null)
+  const historyContainerRef = useRef<HTMLDivElement | null>(null)
 
-  // 🎯 Refs to always access LATEST state (fixes stale closure in shortcuts)
-  const lastQuestionRef = useRef<string>('')
-  const answerRef = useRef<string>('')
+  // State refs (for shortcuts avoiding stale closures)
+  const conversationsRef = useRef<ConversationItem[]>([])
   const statusRef = useRef<'idle' | 'listening' | 'thinking'>('idle')
   const isPausedRef = useRef<boolean>(false)
+  const isAtTopRef = useRef<boolean>(true)
 
-  // 🛡️ Debounce timestamps for shortcuts
+  // Debounce
   const shortcutTimestampsRef = useRef<{ [key: string]: number }>({
-    regenerate: 0,
-    copy: 0,
-    pause: 0,
-    clear: 0,
-    focus: 0,
-    chatQuestion: 0
+    regenerate: 0, copy: 0, pause: 0, clear: 0, focus: 0, chatQuestion: 0, showNext: 0
   })
   const DEBOUNCE_MS = 1500
 
@@ -80,35 +89,17 @@ function Overlay(): JSX.Element {
   }, [])
 
   // ============================================================
-  // 🔄 KEEP REFS IN SYNC WITH STATE (fixes stale closure bug)
+  // 🔄 SYNC REFS
   // ============================================================
-  useEffect(() => {
-    lastQuestionRef.current = lastQuestion
-  }, [lastQuestion])
-
-  useEffect(() => {
-    answerRef.current = answer
-  }, [answer])
-
-  useEffect(() => {
-    statusRef.current = status
-  }, [status])
-
-  useEffect(() => {
-    isPausedRef.current = isPaused
-  }, [isPaused])
+  useEffect(() => { conversationsRef.current = conversations }, [conversations])
+  useEffect(() => { statusRef.current = status }, [status])
+  useEffect(() => { isPausedRef.current = isPaused }, [isPaused])
 
   // ============================================================
-  // 📸 INITIAL STEALTH STATUS
+  // 📸 INITIAL STATE
   // ============================================================
   useEffect(() => {
     window.api.getStealthStatus().then(setStealthOn)
-  }, [])
-
-  // ============================================================
-  // 🎯 LOAD INITIAL AI MODE
-  // ============================================================
-  useEffect(() => {
     window.api.getAIMode().then((mode) => {
       if (mode === 'local' || mode === 'hybrid' || mode === 'cloud') {
         setAIMode(mode as 'local' | 'hybrid' | 'cloud')
@@ -122,6 +113,29 @@ function Overlay(): JSX.Element {
   useEffect(() => {
     let ws: WebSocket | null = null
     let isCleanedUp = false
+    let currentStreamingId: string | null = null
+
+    const generateId = (): string => `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`
+
+    const addNewConversation = (question: string, source: 'voice' | 'chat' | 'test' | 'edit'): string => {
+      const id = generateId()
+      const newItem: ConversationItem = {
+        id,
+        question,
+        answer: '',
+        timestamp: Date.now(),
+        isStreaming: true,
+        source
+      }
+      setConversations((prev) => [newItem, ...prev])
+
+      // Increment badge if user isn't at top
+      if (!isAtTopRef.current) {
+        setNewQuestionCount((prev) => prev + 1)
+      }
+
+      return id
+    }
 
     const handleMessage = (msg: WSMessage): void => {
       if (isCleanedUp) return
@@ -130,29 +144,72 @@ function Overlay(): JSX.Element {
         case 'connected':
           console.log('🎉 Backend:', msg.message)
           break
+
         case 'listening':
           setStatus('listening')
           break
+
         case 'transcript':
-          setTranscript(msg.text)
-          setLastQuestion(msg.text)
+          // New question from voice — add to history
+          currentStreamingId = addNewConversation(msg.text, 'voice')
           setStatus('thinking')
-          setAnswer('')
-          setIsEditing(false)
           break
+
         case 'answer_start':
           setStatus('thinking')
-          setAnswer('')
+          // If there's no current streaming ID, create a new item
+          if (!currentStreamingId) {
+            currentStreamingId = addNewConversation(msg.question, 'chat')
+          }
+          // Update mode/engine info
+          if (msg.mode || msg.engine) {
+            const id = currentStreamingId
+            setConversations((prev) =>
+              prev.map((c) =>
+                c.id === id ? { ...c, mode: msg.mode, engine: msg.engine } : c
+              )
+            )
+          }
           break
+
         case 'answer_token':
-          setAnswer((prev) => prev + msg.token)
+          if (currentStreamingId) {
+            const id = currentStreamingId
+            setConversations((prev) =>
+              prev.map((c) =>
+                c.id === id ? { ...c, answer: c.answer + msg.token } : c
+              )
+            )
+          }
           break
+
         case 'answer_done':
+          if (currentStreamingId) {
+            const id = currentStreamingId
+            setConversations((prev) =>
+              prev.map((c) =>
+                c.id === id ? { ...c, isStreaming: false, answer: msg.full_answer || c.answer } : c
+              )
+            )
+            currentStreamingId = null
+          }
           setStatus('idle')
           break
+
         case 'error':
           console.error('Backend error:', msg.message)
           setStatus('idle')
+          if (currentStreamingId) {
+            const id = currentStreamingId
+            setConversations((prev) =>
+              prev.map((c) =>
+                c.id === id
+                  ? { ...c, isStreaming: false, answer: `❌ Error: ${msg.message}` }
+                  : c
+              )
+            )
+            currentStreamingId = null
+          }
           if (msg.message.includes('Already generating')) {
             setCopyFeedback('⏳ Wait for current answer...')
             setTimeout(() => setCopyFeedback(''), 1500)
@@ -163,7 +220,6 @@ function Overlay(): JSX.Element {
 
     const connect = (): void => {
       if (isCleanedUp) return
-
       if (wsRef.current) {
         wsRef.current.close()
         wsRef.current = null
@@ -219,13 +275,12 @@ function Overlay(): JSX.Element {
   }, [])
 
   // ============================================================
-  // 📥 SEND SESSION CONTEXT TO BACKEND
+  // 📥 SEND SESSION CONTEXT
   // ============================================================
   useEffect(() => {
     if (!connected) return
     const data = useSessionStore.getState()
     if (data.isSetupComplete && wsRef.current?.readyState === WebSocket.OPEN) {
-      console.log('📥 Sending session context to backend...')
       wsRef.current.send(
         JSON.stringify({
           type: 'load_session',
@@ -239,138 +294,182 @@ function Overlay(): JSX.Element {
   }, [connected])
 
   // ============================================================
-  // 🛡️ DEBOUNCE HELPER for shortcuts
+  // 📜 SCROLL DETECTION
+  // ============================================================
+  useEffect(() => {
+    const container = historyContainerRef.current
+    if (!container) return
+
+    const handleScroll = (): void => {
+      const isAtTop = container.scrollTop < 50
+      isAtTopRef.current = isAtTop
+      if (isAtTop && newQuestionCount > 0) {
+        setNewQuestionCount(0)
+      }
+    }
+
+    container.addEventListener('scroll', handleScroll)
+    return () => container.removeEventListener('scroll', handleScroll)
+  }, [newQuestionCount])
+
+  // ============================================================
+  // 🛡️ DEBOUNCE HELPER
   // ============================================================
   const canFireShortcut = (key: string): boolean => {
     const now = Date.now()
     const lastFired = shortcutTimestampsRef.current[key] || 0
-    if (now - lastFired < DEBOUNCE_MS) {
-      console.log(`⏳ Shortcut "${key}" blocked (debounce)`)
-      return false
-    }
+    if (now - lastFired < DEBOUNCE_MS) return false
     shortcutTimestampsRef.current[key] = now
     return true
   }
 
   // ============================================================
-  // ⌨️ LISTEN FOR CLIPBOARD QUESTION (Cmd+Shift+Q)
+  // 📥 SCROLL TO TOP
+  // ============================================================
+  const scrollToTop = (): void => {
+    if (historyContainerRef.current) {
+      historyContainerRef.current.scrollTo({ top: 0, behavior: 'smooth' })
+      setNewQuestionCount(0)
+    }
+  }
+
+  // ============================================================
+  // ⌨️ CLIPBOARD QUESTION
   // ============================================================
   useEffect(() => {
     window.api.onChatQuestion((text: string) => {
       if (!canFireShortcut('chatQuestion')) return
-
-      // 🛡️ Block if AI is thinking (use REF!)
       if (statusRef.current === 'thinking') {
         setCopyFeedback('⏳ Wait for current answer...')
         setTimeout(() => setCopyFeedback(''), 1500)
         return
       }
-
       if (wsRef.current?.readyState === WebSocket.OPEN) {
         wsRef.current.send(JSON.stringify({ type: 'chat_question', text }))
-        setTranscript(`💬 [Chat] ${text}`)
-        setLastQuestion(text)
-        setStatus('thinking')
-        setAnswer('')
-        setIsEditing(false)
       }
     })
   }, [])
 
   // ============================================================
-  // ⌨️ HANDLE GLOBAL KEYBOARD SHORTCUTS (using refs to avoid stale closures)
+  // ⌨️ SHORTCUTS
   // ============================================================
   useEffect(() => {
-    // 🔄 Cmd+Shift+R → Regenerate current answer
+    // 🔄 Regenerate latest
     window.api.onRegenerateAnswer(() => {
       if (!canFireShortcut('regenerate')) return
-
-      // Use REF to get latest values
       if (statusRef.current === 'thinking') {
-        console.log('🔄 Regenerate blocked (already generating)')
         setCopyFeedback('⏳ Wait for current answer...')
         setTimeout(() => setCopyFeedback(''), 1500)
         return
       }
-
-      const currentLastQuestion = lastQuestionRef.current
-      if (!currentLastQuestion || wsRef.current?.readyState !== WebSocket.OPEN) {
-        console.log('🔄 No last question available')
+      const latest = conversationsRef.current[0]
+      if (!latest || wsRef.current?.readyState !== WebSocket.OPEN) {
         setCopyFeedback('No previous question to regenerate')
         setTimeout(() => setCopyFeedback(''), 1500)
         return
       }
-
-      console.log('🔄 Regenerating answer for:', currentLastQuestion)
-      wsRef.current.send(
-        JSON.stringify({ type: 'chat_question', text: currentLastQuestion })
-      )
-      setStatus('thinking')
-      setAnswer('')
+      wsRef.current.send(JSON.stringify({ type: 'chat_question', text: latest.question }))
       setCopyFeedback('Regenerating...')
       setTimeout(() => setCopyFeedback(''), 1200)
     })
 
-    // 📋 Cmd+Shift+C → Copy current answer
+    // 📋 Copy latest answer
     window.api.onCopyAnswer(() => {
       if (!canFireShortcut('copy')) return
-      const currentAnswer = answerRef.current
-      if (!currentAnswer) {
+      const latest = conversationsRef.current[0]
+      if (!latest?.answer) {
         setCopyFeedback('No answer to copy')
         setTimeout(() => setCopyFeedback(''), 1500)
         return
       }
-      window.api.copyToClipboard(currentAnswer)
+      window.api.copyToClipboard(latest.answer)
       setCopyFeedback('Answer copied!')
       setTimeout(() => setCopyFeedback(''), 1500)
     })
 
-    // ⏸️ Cmd+Shift+P → Pause/Resume listening
+    // ⏸️ Pause/Resume
     window.api.onTogglePause(() => {
       if (!canFireShortcut('pause')) return
       if (wsRef.current?.readyState !== WebSocket.OPEN) return
-
       const newPaused = !isPausedRef.current
       setIsPaused(newPaused)
       wsRef.current.send(
-        JSON.stringify({
-          type: newPaused ? 'pause_listening' : 'resume_listening'
-        })
+        JSON.stringify({ type: newPaused ? 'pause_listening' : 'resume_listening' })
       )
       setCopyFeedback(newPaused ? '⏸️ Paused' : '▶️ Resumed')
       setTimeout(() => setCopyFeedback(''), 1500)
     })
 
-    // 🎯 Cmd+Shift+F → Focus test question box
+    // 🎯 Focus test box
     window.api.onFocusTestBox(() => {
       if (!canFireShortcut('focus')) return
       setShowTestBox(true)
       setTimeout(() => testTextareaRef.current?.focus(), 100)
     })
 
-    // 🗑️ Cmd+Shift+K → Clear transcript + answer
+    // 🗑️ Clear all
     window.api.onClearContent(() => {
       if (!canFireShortcut('clear')) return
-      setTranscript('Waiting for interviewer to speak...')
-      setAnswer('')
-      setLastQuestion('')
+      setConversations([])
+      setNewQuestionCount(0)
       setStatus('idle')
       setCopyFeedback('Cleared!')
       setTimeout(() => setCopyFeedback(''), 1200)
     })
-  }, []) // ← Empty dependency array! Refs handle latest state
+
+    // 📥 Show next (scroll to top)
+    window.api.onShowNextQuestion(() => {
+      if (!canFireShortcut('showNext')) return
+      scrollToTop()
+      setCopyFeedback('📥 Latest question')
+      setTimeout(() => setCopyFeedback(''), 1200)
+    })
+  }, [])
 
   // ============================================================
-  // ✏️ EDIT MODE HANDLERS
+  // 🎯 HANDLERS
   // ============================================================
-  const handleStartEdit = async (): Promise<void> => {
-    setEditedText(
-      transcript
-        .replace(/^💬 \[Chat\] /, '')
-        .replace(/^✏️ \[Edited\] /, '')
-        .replace(/^🧪 \[Test\] /, '')
-    )
-    setIsEditing(true)
+  const handleAIModeChange = async (mode: 'local' | 'hybrid' | 'cloud'): Promise<void> => {
+    setAIMode(mode)
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ type: 'set_ai_mode', mode }))
+    }
+    await window.api.setAIMode(mode)
+    const label = mode === 'local' ? '🏠 Local' : mode === 'hybrid' ? '⚡ Hybrid' : '☁️ Cloud'
+    setCopyFeedback(`Switched to ${label}`)
+    setTimeout(() => setCopyFeedback(''), 1500)
+  }
+
+  const handleToggleStealth = async (): Promise<void> => {
+    const newStatus = await window.api.toggleStealth()
+    setStealthOn(newStatus)
+  }
+
+  const handleCopy = async (text: string, label: string): Promise<void> => {
+    if (!text) return
+    await window.api.copyToClipboard(text)
+    setCopyFeedback(`${label} copied!`)
+    setTimeout(() => setCopyFeedback(''), 1500)
+  }
+
+  const handleRegenerateItem = (item: ConversationItem): void => {
+    if (status === 'thinking') {
+      setCopyFeedback('⏳ Wait for current answer...')
+      setTimeout(() => setCopyFeedback(''), 1500)
+      return
+    }
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ type: 'chat_question', text: item.question }))
+    }
+  }
+
+  const handleDeleteItem = (id: string): void => {
+    setConversations((prev) => prev.filter((c) => c.id !== id))
+  }
+
+  const handleStartEditItem = async (item: ConversationItem): Promise<void> => {
+    setEditingId(item.id)
+    setEditedText(item.question)
     await window.api.enableFocus()
     setTimeout(() => {
       editTextareaRef.current?.focus()
@@ -379,36 +478,31 @@ function Overlay(): JSX.Element {
   }
 
   const handleCancelEdit = async (): Promise<void> => {
-    setIsEditing(false)
+    setEditingId(null)
     setEditedText('')
     await window.api.disableFocus()
   }
 
-  const handleRegenerate = async (): Promise<void> => {
+  const handleSubmitEdit = async (): Promise<void> => {
     const question = editedText.trim()
     if (!question) return
-
     if (status === 'thinking') {
       setCopyFeedback('⏳ Wait for current answer...')
       setTimeout(() => setCopyFeedback(''), 1500)
       return
     }
-
     if (wsRef.current?.readyState === WebSocket.OPEN) {
       wsRef.current.send(JSON.stringify({ type: 'chat_question', text: question }))
-      setTranscript(`✏️ [Edited] ${question}`)
-      setLastQuestion(question)
-      setStatus('thinking')
-      setAnswer('')
-      setIsEditing(false)
+      setEditingId(null)
+      setEditedText('')
       await window.api.disableFocus()
     }
   }
 
-  const handleTextareaKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>): void => {
+  const handleEditKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>): void => {
     if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
       e.preventDefault()
-      handleRegenerate()
+      handleSubmitEdit()
     }
     if (e.key === 'Escape') {
       e.preventDefault()
@@ -417,24 +511,18 @@ function Overlay(): JSX.Element {
   }
 
   // ============================================================
-  // 🧪 TEST QUESTION HANDLER
+  // 🧪 TEST QUESTION
   // ============================================================
   const handleTestQuestion = async (): Promise<void> => {
     const question = testQuestion.trim()
     if (!question) return
-
     if (status === 'thinking') {
       setCopyFeedback('⏳ Wait for current answer...')
       setTimeout(() => setCopyFeedback(''), 1500)
       return
     }
-
     if (wsRef.current?.readyState === WebSocket.OPEN) {
       wsRef.current.send(JSON.stringify({ type: 'chat_question', text: question }))
-      setTranscript(`🧪 [Test] ${question}`)
-      setLastQuestion(question)
-      setStatus('thinking')
-      setAnswer('')
       setTestQuestion('')
     }
   }
@@ -456,38 +544,7 @@ function Overlay(): JSX.Element {
   }
 
   // ============================================================
-  // 🎯 OTHER HANDLERS
-  // ============================================================
-  const handleToggleStealth = async (): Promise<void> => {
-    const newStatus = await window.api.toggleStealth()
-    setStealthOn(newStatus)
-  }
-
-  const handleAIModeChange = async (mode: 'local' | 'hybrid' | 'cloud'): Promise<void> => {
-    setAIMode(mode)
-
-    // Send to backend via WebSocket
-    if (wsRef.current?.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify({ type: 'set_ai_mode', mode }))
-    }
-
-    // Store in local Electron for persistence
-    await window.api.setAIMode(mode)
-
-    const label = mode === 'local' ? '🏠 Local' : mode === 'hybrid' ? '⚡ Hybrid' : '☁️ Cloud'
-    setCopyFeedback(`Switched to ${label}`)
-    setTimeout(() => setCopyFeedback(''), 1500)
-  }
-
-  const handleCopy = async (text: string, label: string): Promise<void> => {
-    if (!text) return
-    await window.api.copyToClipboard(text)
-    setCopyFeedback(`${label} copied!`)
-    setTimeout(() => setCopyFeedback(''), 1500)
-  }
-
-  // ============================================================
-  // 🎨 STATUS HELPERS
+  // 🎨 UTILITIES
   // ============================================================
   const getStatusColor = (): string => {
     if (!connected) return '#ff4757'
@@ -503,6 +560,25 @@ function Overlay(): JSX.Element {
     if (status === 'listening') return 'Listening...'
     if (status === 'thinking') return 'Thinking...'
     return 'Ready'
+  }
+
+  const formatTime = (timestamp: number): string => {
+    const seconds = Math.floor((Date.now() - timestamp) / 1000)
+    if (seconds < 5) return 'now'
+    if (seconds < 60) return `${seconds}s ago`
+    const minutes = Math.floor(seconds / 60)
+    if (minutes < 60) return `${minutes}m ago`
+    return `${Math.floor(minutes / 60)}h ago`
+  }
+
+  const getSourceIcon = (source: string): string => {
+    switch (source) {
+      case 'voice': return '🎙️'
+      case 'chat': return '💬'
+      case 'test': return '🧪'
+      case 'edit': return '✏️'
+      default: return '❓'
+    }
   }
 
   // ============================================================
@@ -524,7 +600,7 @@ function Overlay(): JSX.Element {
         backdropFilter: 'blur(20px)'
       }}
     >
-      {/* HEADER (draggable) */}
+      {/* HEADER */}
       <div
         style={
           {
@@ -595,12 +671,11 @@ function Overlay(): JSX.Element {
             padding: '4px 10px',
             fontSize: '11px',
             fontWeight: 500,
-            cursor: 'pointer',
-            transition: 'all 0.2s'
+            cursor: 'pointer'
           }}
           title={stealthOn ? 'Invisible in screenshots' : 'Visible in screenshots'}
         >
-          {stealthOn ? '👻 Stealth ON' : '📸 Stealth OFF'}
+          {stealthOn ? '👻 Stealth' : '📸 Visible'}
         </button>
 
         <button
@@ -619,83 +694,93 @@ function Overlay(): JSX.Element {
             fontWeight: 500,
             cursor: 'pointer'
           }}
-          title="Go back to setup screen"
+          title="Setup"
         >
-          ⚙️ Setup
+          ⚙️
         </button>
+
         {/* AI Mode Selector */}
         <div
           style={{
             display: 'flex',
             alignItems: 'center',
             gap: '2px',
-            marginLeft: '8px',
+            marginLeft: '4px',
             padding: '2px',
             background: 'rgba(255, 255, 255, 0.05)',
             border: '1px solid rgba(255, 255, 255, 0.1)',
             borderRadius: '6px'
           }}
         >
-          <button
-            onClick={() => handleAIModeChange('local')}
-            title="Local only (100% private, slower)"
-            style={{
-              background: aiMode === 'local' ? 'rgba(255, 165, 2, 0.25)' : 'transparent',
-              color: aiMode === 'local' ? '#ffa502' : 'rgba(255, 255, 255, 0.5)',
-              border: 'none',
-              borderRadius: '4px',
-              padding: '3px 8px',
-              fontSize: '10px',
-              fontWeight: 600,
-              cursor: 'pointer',
-              transition: 'all 0.2s'
-            }}
-          >
-            🏠 Local
-          </button>
-          <button
-            onClick={() => handleAIModeChange('hybrid')}
-            title="Smart routing (recommended: fast + private)"
-            style={{
-              background: aiMode === 'hybrid' ? 'rgba(92, 108, 255, 0.25)' : 'transparent',
-              color: aiMode === 'hybrid' ? '#5c6cff' : 'rgba(255, 255, 255, 0.5)',
-              border: 'none',
-              borderRadius: '4px',
-              padding: '3px 8px',
-              fontSize: '10px',
-              fontWeight: 600,
-              cursor: 'pointer',
-              transition: 'all 0.2s'
-            }}
-          >
-            ⚡ Hybrid
-          </button>
-          <button
-            onClick={() => handleAIModeChange('cloud')}
-            title="Cloud only (fastest, uses Groq)"
-            style={{
-              background: aiMode === 'cloud' ? 'rgba(46, 213, 115, 0.25)' : 'transparent',
-              color: aiMode === 'cloud' ? '#2ed573' : 'rgba(255, 255, 255, 0.5)',
-              border: 'none',
-              borderRadius: '4px',
-              padding: '3px 8px',
-              fontSize: '10px',
-              fontWeight: 600,
-              cursor: 'pointer',
-              transition: 'all 0.2s'
-            }}
-          >
-            ☁️ Cloud
-          </button>
+          {(['local', 'hybrid', 'cloud'] as const).map((mode) => (
+            <button
+              key={mode}
+              onClick={() => handleAIModeChange(mode)}
+              title={mode === 'local' ? 'Local only' : mode === 'hybrid' ? 'Smart routing' : 'Cloud only'}
+              style={{
+                background:
+                  aiMode === mode
+                    ? mode === 'local'
+                      ? 'rgba(255, 165, 2, 0.25)'
+                      : mode === 'hybrid'
+                        ? 'rgba(92, 108, 255, 0.25)'
+                        : 'rgba(46, 213, 115, 0.25)'
+                    : 'transparent',
+                color:
+                  aiMode === mode
+                    ? mode === 'local'
+                      ? '#ffa502'
+                      : mode === 'hybrid'
+                        ? '#5c6cff'
+                        : '#2ed573'
+                    : 'rgba(255, 255, 255, 0.5)',
+                border: 'none',
+                borderRadius: '4px',
+                padding: '3px 8px',
+                fontSize: '10px',
+                fontWeight: 600,
+                cursor: 'pointer'
+              }}
+            >
+              {mode === 'local' ? '🏠' : mode === 'hybrid' ? '⚡' : '☁️'} {mode}
+            </button>
+          ))}
         </div>
+
+        {/* Clear All Button */}
+        {conversations.length > 0 && (
+          <button
+            onClick={() => {
+              if (confirm('Clear all conversation history?')) {
+                setConversations([])
+                setNewQuestionCount(0)
+              }
+            }}
+            style={{
+              background: 'rgba(255, 71, 87, 0.1)',
+              color: '#ff4757',
+              border: '1px solid rgba(255, 71, 87, 0.3)',
+              borderRadius: '6px',
+              padding: '4px 8px',
+              fontSize: '10px',
+              fontWeight: 500,
+              cursor: 'pointer',
+              marginLeft: '4px'
+            }}
+            title="Clear all history"
+          >
+            🗑️
+          </button>
+        )}
 
         {copyFeedback && (
           <span
             style={{
               fontSize: '10px',
-              color: copyFeedback.includes('⏳') || copyFeedback.includes('No ')
-                ? '#ffa502'
-                : '#2ed573',
+              color:
+                copyFeedback.includes('⏳') || copyFeedback.includes('No ')
+                  ? '#ffa502'
+                  : '#2ed573',
               marginLeft: 'auto',
               fontWeight: 600
             }}
@@ -707,8 +792,34 @@ function Overlay(): JSX.Element {
         )}
       </div>
 
-      {/* MAIN CONTENT */}
+      {/* NEW QUESTIONS BANNER */}
+      {newQuestionCount > 0 && (
+        <div
+          onClick={scrollToTop}
+          style={{
+            background: 'linear-gradient(90deg, #ff4757 0%, #ff6b7a 100%)',
+            color: 'white',
+            padding: '8px 15px',
+            fontSize: '11px',
+            fontWeight: 700,
+            cursor: 'pointer',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            flexShrink: 0,
+            animation: 'pulse 2s infinite'
+          }}
+        >
+          <span>
+            🔴 {newQuestionCount} NEW {newQuestionCount === 1 ? 'QUESTION' : 'QUESTIONS'} ABOVE
+          </span>
+          <span style={{ opacity: 0.9 }}>Click or ⌘⇧N</span>
+        </div>
+      )}
+
+      {/* MAIN SCROLLABLE AREA */}
       <div
+        ref={historyContainerRef}
         style={
           {
             flex: 1,
@@ -718,7 +829,7 @@ function Overlay(): JSX.Element {
           } as React.CSSProperties
         }
       >
-        {/* Test Question Box */}
+        {/* Test Box */}
         {showTestBox && (
           <div
             style={{
@@ -737,15 +848,8 @@ function Overlay(): JSX.Element {
                 marginBottom: '8px'
               }}
             >
-              <div
-                style={{
-                  fontSize: '10px',
-                  fontWeight: 700,
-                  color: '#a0aaff',
-                  letterSpacing: '0.5px'
-                }}
-              >
-                🧪 TEST QUESTION (Manual Input)
+              <div style={{ fontSize: '10px', fontWeight: 700, color: '#a0aaff' }}>
+                🧪 TEST QUESTION
               </div>
               <button
                 onClick={() => setShowTestBox(false)}
@@ -754,10 +858,8 @@ function Overlay(): JSX.Element {
                   border: 'none',
                   color: 'rgba(255, 255, 255, 0.4)',
                   cursor: 'pointer',
-                  fontSize: '14px',
-                  padding: '0 4px'
+                  fontSize: '14px'
                 }}
-                title="Hide test box"
               >
                 ✖
               </button>
@@ -771,10 +873,10 @@ function Overlay(): JSX.Element {
               onFocus={handleTestBoxFocus}
               onBlur={handleTestBoxBlur}
               onClick={handleTestBoxFocus}
-              placeholder="Type any interview question here... (Cmd+Enter to submit)"
+              placeholder="Type any interview question... (Cmd+Enter to submit)"
               style={{
                 width: '100%',
-                minHeight: '60px',
+                minHeight: '50px',
                 fontSize: '13px',
                 color: 'white',
                 background: 'rgba(0, 0, 0, 0.3)',
@@ -794,10 +896,10 @@ function Overlay(): JSX.Element {
                 display: 'flex',
                 justifyContent: 'space-between',
                 alignItems: 'center',
-                marginTop: '8px'
+                marginTop: '6px'
               }}
             >
-              <span style={{ fontSize: '10px', opacity: 0.5 }}>💡 Cmd+Enter to send</span>
+              <span style={{ fontSize: '10px', opacity: 0.5 }}>💡 Cmd+Enter</span>
               <button
                 onClick={handleTestQuestion}
                 disabled={!testQuestion.trim() || status === 'thinking'}
@@ -812,18 +914,13 @@ function Overlay(): JSX.Element {
                       ? 'white'
                       : 'rgba(255, 255, 255, 0.3)',
                   borderRadius: '6px',
-                  padding: '6px 14px',
+                  padding: '5px 12px',
                   fontSize: '11px',
                   fontWeight: 700,
-                  cursor:
-                    testQuestion.trim() && status !== 'thinking' ? 'pointer' : 'not-allowed',
-                  boxShadow:
-                    testQuestion.trim() && status !== 'thinking'
-                      ? '0 2px 8px rgba(55, 66, 250, 0.4)'
-                      : 'none'
+                  cursor: testQuestion.trim() && status !== 'thinking' ? 'pointer' : 'not-allowed'
                 }}
               >
-                {status === 'thinking' ? '⏳ THINKING...' : '🚀 ASK AI'}
+                {status === 'thinking' ? '⏳' : '🚀 ASK'}
               </button>
             </div>
           </div>
@@ -834,8 +931,8 @@ function Overlay(): JSX.Element {
             onClick={() => setShowTestBox(true)}
             style={{
               width: '100%',
-              padding: '8px',
-              marginBottom: '14px',
+              padding: '6px',
+              marginBottom: '12px',
               background: 'rgba(92, 108, 255, 0.08)',
               border: '1px dashed rgba(92, 108, 255, 0.3)',
               borderRadius: '6px',
@@ -845,249 +942,282 @@ function Overlay(): JSX.Element {
               cursor: 'pointer'
             }}
           >
-            🧪 Show Test Question Box
+            🧪 Show Test Box
           </button>
         )}
 
-        {/* Transcript / Edit Section */}
-        <div style={{ marginBottom: '16px' }}>
+        {/* CONVERSATION HISTORY */}
+        {conversations.length === 0 ? (
           <div
             style={{
-              display: 'flex',
-              justifyContent: 'space-between',
-              alignItems: 'center',
-              marginBottom: '6px'
+              textAlign: 'center',
+              padding: '40px 20px',
+              opacity: 0.4,
+              fontSize: '13px',
+              fontStyle: 'italic'
             }}
           >
+            Waiting for interviewer to speak, or use test box above...
+          </div>
+        ) : (
+          conversations.map((item, index) => (
             <div
+              key={item.id}
               style={{
-                opacity: 0.5,
-                fontSize: '10px',
-                fontWeight: 600,
-                letterSpacing: '0.5px'
+                marginBottom: '16px',
+                padding: '12px',
+                background:
+                  index === 0
+                    ? 'rgba(92, 108, 255, 0.05)'
+                    : 'rgba(255, 255, 255, 0.02)',
+                border: `1px solid ${index === 0 ? 'rgba(92, 108, 255, 0.2)' : 'rgba(255, 255, 255, 0.05)'
+                  }`,
+                borderRadius: '10px'
               }}
             >
-              {isEditing ? '✏️  EDIT QUESTION' : 'INTERVIEWER IS SAYING'}
-            </div>
-
-            <div style={{ display: 'flex', gap: '6px' }}>
-              {!isEditing ? (
-                <>
-                  <button
-                    onClick={handleStartEdit}
-                    style={{
-                      background: 'rgba(55, 66, 250, 0.15)',
-                      border: '1px solid rgba(55, 66, 250, 0.4)',
-                      color: '#5c6cff',
-                      borderRadius: '4px',
-                      padding: '3px 10px',
-                      fontSize: '10px',
-                      fontWeight: 600,
-                      cursor: 'pointer'
-                    }}
-                    title="Edit and regenerate"
-                  >
-                    ✏️ EDIT
-                  </button>
-                  <button
-                    onClick={() => handleCopy(transcript, 'Question')}
-                    style={{
-                      background: 'rgba(255, 165, 2, 0.15)',
-                      border: '1px solid rgba(255, 165, 2, 0.3)',
-                      color: '#ffa502',
-                      borderRadius: '4px',
-                      padding: '3px 10px',
-                      fontSize: '10px',
-                      fontWeight: 600,
-                      cursor: 'pointer'
-                    }}
-                    title="Copy question"
-                  >
-                    📋 COPY
-                  </button>
-                </>
-              ) : (
-                <button
-                  onClick={handleCancelEdit}
-                  style={{
-                    background: 'rgba(255, 71, 87, 0.15)',
-                    border: '1px solid rgba(255, 71, 87, 0.4)',
-                    color: '#ff4757',
-                    borderRadius: '4px',
-                    padding: '3px 10px',
-                    fontSize: '10px',
-                    fontWeight: 600,
-                    cursor: 'pointer'
-                  }}
-                  title="Cancel editing"
-                >
-                  ✖ CANCEL
-                </button>
-              )}
-            </div>
-          </div>
-
-          {!isEditing ? (
-            <div
-              onDoubleClick={handleStartEdit}
-              style={
-                {
-                  fontSize: '13px',
-                  color: '#ffa502',
-                  lineHeight: 1.5,
-                  padding: '10px 12px',
-                  background: 'rgba(255, 165, 2, 0.08)',
-                  border: '1px solid rgba(255, 165, 2, 0.2)',
-                  borderRadius: '8px',
-                  userSelect: 'text',
-                  WebkitUserSelect: 'text',
-                  cursor: 'pointer'
-                } as React.CSSProperties
-              }
-              title="Double-click to edit"
-            >
-              {transcript}
-            </div>
-          ) : (
-            <div>
-              <textarea
-                ref={editTextareaRef}
-                value={editedText}
-                onChange={(e) => setEditedText(e.target.value)}
-                onKeyDown={handleTextareaKeyDown}
-                placeholder="Fix the question here..."
-                style={{
-                  width: '100%',
-                  minHeight: '80px',
-                  fontSize: '13px',
-                  color: '#ffffff',
-                  lineHeight: 1.5,
-                  padding: '10px 12px',
-                  background: 'rgba(55, 66, 250, 0.08)',
-                  border: '1px solid rgba(55, 66, 250, 0.4)',
-                  borderRadius: '8px',
-                  outline: 'none',
-                  resize: 'vertical',
-                  fontFamily: 'inherit',
-                  boxSizing: 'border-box'
-                }}
-              />
+              {/* Question Header */}
               <div
                 style={{
                   display: 'flex',
                   justifyContent: 'space-between',
                   alignItems: 'center',
-                  marginTop: '8px'
+                  marginBottom: '8px'
                 }}
               >
-                <span style={{ fontSize: '10px', opacity: 0.5 }}>
-                  💡 Cmd+Enter to regenerate · Esc to cancel
-                </span>
-                <button
-                  onClick={handleRegenerate}
-                  disabled={!editedText.trim() || status === 'thinking'}
+                <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                  <span style={{ fontSize: '11px' }}>{getSourceIcon(item.source)}</span>
+                  <span
+                    style={{
+                      fontSize: '9px',
+                      fontWeight: 700,
+                      color: 'rgba(255, 255, 255, 0.5)',
+                      letterSpacing: '0.5px'
+                    }}
+                  >
+                    QUESTION · {formatTime(item.timestamp)}
+                  </span>
+                  {item.engine && (
+                    <span
+                      style={{
+                        fontSize: '9px',
+                        padding: '1px 6px',
+                        borderRadius: '3px',
+                        background:
+                          item.engine === 'cloud'
+                            ? 'rgba(46, 213, 115, 0.15)'
+                            : 'rgba(255, 165, 2, 0.15)',
+                        color: item.engine === 'cloud' ? '#2ed573' : '#ffa502',
+                        fontWeight: 600
+                      }}
+                    >
+                      {item.engine === 'cloud' ? '☁️' : '🏠'}
+                    </span>
+                  )}
+                </div>
+                <div style={{ display: 'flex', gap: '4px' }}>
+                  {editingId !== item.id && (
+                    <>
+                      <button
+                        onClick={() => handleStartEditItem(item)}
+                        style={{
+                          background: 'rgba(55, 66, 250, 0.15)',
+                          border: '1px solid rgba(55, 66, 250, 0.3)',
+                          color: '#5c6cff',
+                          borderRadius: '3px',
+                          padding: '2px 6px',
+                          fontSize: '9px',
+                          cursor: 'pointer'
+                        }}
+                        title="Edit & regenerate"
+                      >
+                        ✏️
+                      </button>
+                      <button
+                        onClick={() => handleRegenerateItem(item)}
+                        disabled={status === 'thinking'}
+                        style={{
+                          background: 'rgba(92, 108, 255, 0.15)',
+                          border: '1px solid rgba(92, 108, 255, 0.3)',
+                          color: '#5c6cff',
+                          borderRadius: '3px',
+                          padding: '2px 6px',
+                          fontSize: '9px',
+                          cursor: status === 'thinking' ? 'not-allowed' : 'pointer',
+                          opacity: status === 'thinking' ? 0.4 : 1
+                        }}
+                        title="Regenerate"
+                      >
+                        🔄
+                      </button>
+                      <button
+                        onClick={() => handleDeleteItem(item.id)}
+                        style={{
+                          background: 'rgba(255, 71, 87, 0.15)',
+                          border: '1px solid rgba(255, 71, 87, 0.3)',
+                          color: '#ff4757',
+                          borderRadius: '3px',
+                          padding: '2px 6px',
+                          fontSize: '9px',
+                          cursor: 'pointer'
+                        }}
+                        title="Delete"
+                      >
+                        🗑️
+                      </button>
+                    </>
+                  )}
+                </div>
+              </div>
+
+              {/* Question Text or Edit */}
+              {editingId === item.id ? (
+                <div>
+                  <textarea
+                    ref={editTextareaRef}
+                    value={editedText}
+                    onChange={(e) => setEditedText(e.target.value)}
+                    onKeyDown={handleEditKeyDown}
+                    style={{
+                      width: '100%',
+                      minHeight: '60px',
+                      fontSize: '13px',
+                      color: 'white',
+                      background: 'rgba(55, 66, 250, 0.08)',
+                      border: '1px solid rgba(55, 66, 250, 0.4)',
+                      borderRadius: '6px',
+                      padding: '8px 10px',
+                      outline: 'none',
+                      resize: 'vertical',
+                      fontFamily: 'inherit',
+                      boxSizing: 'border-box',
+                      marginBottom: '6px'
+                    }}
+                  />
+                  <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '6px' }}>
+                    <button
+                      onClick={handleCancelEdit}
+                      style={{
+                        background: 'rgba(255, 71, 87, 0.15)',
+                        border: '1px solid rgba(255, 71, 87, 0.4)',
+                        color: '#ff4757',
+                        borderRadius: '4px',
+                        padding: '4px 10px',
+                        fontSize: '10px',
+                        fontWeight: 600,
+                        cursor: 'pointer'
+                      }}
+                    >
+                      ✖ Cancel
+                    </button>
+                    <button
+                      onClick={handleSubmitEdit}
+                      disabled={!editedText.trim() || status === 'thinking'}
+                      style={{
+                        background:
+                          editedText.trim() && status !== 'thinking'
+                            ? 'linear-gradient(135deg, #5c6cff 0%, #3742fa 100%)'
+                            : 'rgba(255, 255, 255, 0.05)',
+                        border: 'none',
+                        color: editedText.trim() && status !== 'thinking' ? 'white' : 'rgba(255,255,255,0.3)',
+                        borderRadius: '4px',
+                        padding: '4px 10px',
+                        fontSize: '10px',
+                        fontWeight: 600,
+                        cursor: editedText.trim() && status !== 'thinking' ? 'pointer' : 'not-allowed'
+                      }}
+                    >
+                      🔄 Regenerate
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div
                   style={{
-                    background:
-                      editedText.trim() && status !== 'thinking'
-                        ? 'linear-gradient(135deg, #5c6cff 0%, #3742fa 100%)'
-                        : 'rgba(255, 255, 255, 0.05)',
-                    border: 'none',
-                    color:
-                      editedText.trim() && status !== 'thinking'
-                        ? 'white'
-                        : 'rgba(255,255,255,0.3)',
+                    fontSize: '13px',
+                    color: '#ffa502',
+                    lineHeight: 1.4,
+                    padding: '8px 10px',
+                    background: 'rgba(255, 165, 2, 0.06)',
+                    border: '1px solid rgba(255, 165, 2, 0.15)',
                     borderRadius: '6px',
-                    padding: '6px 14px',
-                    fontSize: '11px',
-                    fontWeight: 600,
-                    cursor:
-                      editedText.trim() && status !== 'thinking' ? 'pointer' : 'not-allowed',
-                    boxShadow:
-                      editedText.trim() && status !== 'thinking'
-                        ? '0 2px 8px rgba(55, 66, 250, 0.4)'
-                        : 'none'
+                    marginBottom: '10px',
+                    userSelect: 'text',
+                    WebkitUserSelect: 'text'
+                  } as React.CSSProperties}
+                >
+                  {item.question}
+                </div>
+              )}
+
+              {/* Answer Header */}
+              <div
+                style={{
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'center',
+                  marginBottom: '6px'
+                }}
+              >
+                <span
+                  style={{
+                    fontSize: '9px',
+                    fontWeight: 700,
+                    color: 'rgba(255, 255, 255, 0.5)',
+                    letterSpacing: '0.5px'
                   }}
                 >
-                  {status === 'thinking' ? '⏳ WAIT...' : '🔄 REGENERATE'}
-                </button>
+                  {item.isStreaming ? '💭 ANSWER (streaming...)' : '✓ ANSWER'}
+                </span>
+                {item.answer && !item.isStreaming && (
+                  <button
+                    onClick={() => handleCopy(item.answer, 'Answer')}
+                    style={{
+                      background: 'rgba(46, 213, 115, 0.15)',
+                      border: '1px solid rgba(46, 213, 115, 0.3)',
+                      color: '#2ed573',
+                      borderRadius: '3px',
+                      padding: '2px 8px',
+                      fontSize: '9px',
+                      fontWeight: 600,
+                      cursor: 'pointer'
+                    }}
+                  >
+                    📋 Copy
+                  </button>
+                )}
+              </div>
+
+              {/* Answer Content */}
+              <div
+                style={{
+                  fontSize: '14px',
+                  lineHeight: 1.6,
+                  padding: '10px 12px',
+                  background: 'rgba(46, 213, 115, 0.04)',
+                  border: '1px solid rgba(46, 213, 115, 0.12)',
+                  borderRadius: '6px',
+                  minHeight: item.answer ? 'auto' : '40px',
+                  userSelect: 'text',
+                  WebkitUserSelect: 'text'
+                } as React.CSSProperties}
+              >
+                {item.answer ? (
+                  <MessageRenderer content={item.answer} onCopyCode={(code) => handleCopy(code, 'Code')} />
+                ) : (
+                  <span style={{ opacity: 0.4, fontStyle: 'italic', fontSize: '12px' }}>
+                    Generating answer...
+                  </span>
+                )}
               </div>
             </div>
-          )}
-        </div>
-
-        {/* Answer Section */}
-        <div>
-          <div
-            style={{
-              display: 'flex',
-              justifyContent: 'space-between',
-              alignItems: 'center',
-              marginBottom: '6px'
-            }}
-          >
-            <div
-              style={{
-                opacity: 0.5,
-                fontSize: '10px',
-                fontWeight: 600,
-                letterSpacing: '0.5px'
-              }}
-            >
-              SUGGESTED ANSWER
-            </div>
-            <button
-              onClick={() => handleCopy(answer, 'Answer')}
-              disabled={!answer}
-              style={{
-                background: answer ? 'rgba(46, 213, 115, 0.15)' : 'transparent',
-                border: '1px solid rgba(46, 213, 115, 0.3)',
-                color: answer ? '#2ed573' : 'rgba(255, 255, 255, 0.2)',
-                borderRadius: '4px',
-                padding: '3px 10px',
-                fontSize: '10px',
-                fontWeight: 600,
-                cursor: answer ? 'pointer' : 'not-allowed'
-              }}
-              title="Copy full answer"
-            >
-              📋 COPY ALL
-            </button>
-          </div>
-          <div
-            onDoubleClick={() => answer && handleCopy(answer, 'Answer')}
-            style={
-              {
-                fontSize: '14px',
-                lineHeight: 1.6,
-                padding: '12px 14px',
-                background: 'rgba(46, 213, 115, 0.06)',
-                border: '1px solid rgba(46, 213, 115, 0.15)',
-                borderRadius: '8px',
-                minHeight: '80px',
-                userSelect: 'text',
-                WebkitUserSelect: 'text',
-                cursor: answer ? 'copy' : 'default'
-              } as React.CSSProperties
-            }
-            title={answer ? 'Double-click to copy entire answer' : ''}
-          >
-            {answer ? (
-              <MessageRenderer content={answer} onCopyCode={(code) => handleCopy(code, 'Code')} />
-            ) : (
-              <span style={{ opacity: 0.4, fontStyle: 'italic' }}>
-                {status === 'thinking'
-                  ? 'Generating answer...'
-                  : 'AI answers will stream here after a question is detected.'}
-              </span>
-            )}
-          </div>
-        </div>
+          ))
+        )}
       </div>
 
-      {/* BOTTOM STATUS BAR */}
+      {/* BOTTOM BAR */}
       <div
         style={{
-          height: '28px',
+          height: '26px',
           background: 'rgba(255, 255, 255, 0.03)',
           borderTop: '1px solid rgba(255, 255, 255, 0.08)',
           display: 'flex',
@@ -1099,8 +1229,11 @@ function Overlay(): JSX.Element {
           flexShrink: 0
         }}
       >
-        <span>{connected ? '🟢 Connected to backend' : '🔴 Backend offline'}</span>
-        <span>⌘⇧H hide · ⌘⇧Q ask · ⌘⇧R regen · ⌘⇧K clear</span>
+        <span>
+          {connected ? '🟢 Connected' : '🔴 Offline'}
+          {conversations.length > 0 && ` · ${conversations.length} Q&A`}
+        </span>
+        <span>⌘⇧H hide · ⌘⇧N latest · ⌘⇧R regen · ⌘⇧K clear</span>
       </div>
     </div>
   )

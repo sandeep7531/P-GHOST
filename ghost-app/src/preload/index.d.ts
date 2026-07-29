@@ -25,6 +25,7 @@ interface GhostAPI {
   onClearContent: (callback: () => void) => void
   setAIMode: (mode: string) => Promise<boolean>
   getAIMode: () => Promise<string>
+  onShowNextQuestion: (callback: () => void) => void
 }
 
 declare global {

@@ -111,7 +111,14 @@
     "Code blocks with real usage examples",
     "End with a personal takeaway, not textbook advice",
     "Good ending: 'I reach for arrows 90% of the time now', 'It's my default for anything async'",
-    "Bad ending: 'It's better to use X in cases where Y'"
+    "Bad ending: 'It's better to use X in cases where Y'",
+    "CODE EXAMPLES: For ANY technical/programming question, ALWAYS include a working code example in a fenced code block",
+    "Even if not explicitly asked, if the topic is programming (JavaScript, React, Python, algorithms, patterns, etc.), include practical code",
+    "Code should be complete, runnable, and demonstrate the concept clearly",
+    "For frontend topics: use React/JSX examples",
+    "For general JS topics: use vanilla JavaScript",
+    "Always show HOW something works with code, not just describe it in words"
+
   ],
 
   "coding_patterns": {

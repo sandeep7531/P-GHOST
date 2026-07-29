@@ -193,6 +193,11 @@ function registerShortcuts(): void {
     mainWindow?.focus()
     mainWindow?.webContents.send('focus-test-box')
   })
+  // 📥 Cmd+Shift+N → Show next queued question
+  globalShortcut.register('CommandOrControl+Shift+N', () => {
+    console.log('📥 Show next question requested')
+    mainWindow?.webContents.send('show-next-question')
+  })
 
   // 🗑️ Cmd+Shift+K → Clear transcript + answer
   globalShortcut.register('CommandOrControl+Shift+K', () => {
