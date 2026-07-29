@@ -6,6 +6,7 @@ Handles:
   - VAD (voice activity detection)
   - Whisper transcription
   - WebSocket server (Electron overlay ↔ this backend)
+  - Pause/Resume via keyboard shortcuts
 
 All LLM logic lives in `llm_engine.py`.
 """
@@ -65,6 +66,12 @@ WHISPER_MODEL = "mlx-community/whisper-small-mlx-q4"
 
 WEBSOCKET_HOST = "localhost"
 WEBSOCKET_PORT = 8765
+
+
+# ============================================================
+# 🎯 GLOBAL STATE
+# ============================================================
+is_paused = False   # When True, audio processing is paused
 
 
 # ============================================================
@@ -211,6 +218,14 @@ class AudioListener:
             except queue.Empty:
                 continue
 
+            # ⏸️ Skip processing entirely when paused
+            if is_paused:
+                # Drain queue so buffer doesn't grow while paused
+                self.speech_buffer = []
+                self.silence_frames = 0
+                self.is_speaking = False
+                continue
+
             flat = chunk.flatten()
             num_frames = len(flat) // FRAME_SIZE
 
@@ -236,6 +251,12 @@ class AudioListener:
                             self._finalize_speech()
 
     def _finalize_speech(self):
+        # ⏸️ Skip if paused
+        if is_paused:
+            print("⏸️  Listening paused, ignoring speech")
+            self._reset()
+            return
+
         if len(self.speech_buffer) < self.min_speech_frames:
             print(f"⏭️  Skipping short segment")
             self._reset()
@@ -290,13 +311,15 @@ class AudioListener:
 # 📡 WEBSOCKET HANDLER
 # ============================================================
 async def websocket_handler(websocket):
+    global is_paused
     await broadcaster.register(websocket)
     try:
         # Initial hello
         await websocket.send(json.dumps({
             "type": "connected",
             "message": "Ghost backend connected",
-            "context_loaded": llm.session_context["loaded"]
+            "context_loaded": llm.session_context["loaded"],
+            "is_paused": is_paused
         }))
 
         # Listen for messages from Electron
@@ -327,12 +350,26 @@ async def websocket_handler(websocket):
                     llm.clear_session()
 
                 # ─────────────────────────────────
-                # 💬 CHAT QUESTION (from clipboard/edit/test box)
+                # 💬 CHAT QUESTION (clipboard/test box/edit)
                 # ─────────────────────────────────
                 elif msg_type == "chat_question":
                     question = data.get("text", "")
                     print(f"\n💬 Chat question: {question}")
                     run_llm(question)
+
+                # ─────────────────────────────────
+                # ⏸️ PAUSE LISTENING
+                # ─────────────────────────────────
+                elif msg_type == "pause_listening":
+                    is_paused = True
+                    print("⏸️  Audio listening PAUSED (chat questions still work)")
+
+                # ─────────────────────────────────
+                # ▶️ RESUME LISTENING
+                # ─────────────────────────────────
+                elif msg_type == "resume_listening":
+                    is_paused = False
+                    print("▶️  Audio listening RESUMED")
 
             except json.JSONDecodeError:
                 pass

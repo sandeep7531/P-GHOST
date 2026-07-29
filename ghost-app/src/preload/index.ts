@@ -14,15 +14,33 @@ const api = {
   enableFocus: (): Promise<boolean> => ipcRenderer.invoke('enable-focus'),
   disableFocus: (): Promise<boolean> => ipcRenderer.invoke('disable-focus'),
 
-  // Chat question listener
-  onChatQuestion: (callback: (text: string) => void): void => {
-    ipcRenderer.on('chat-question', (_event, text) => callback(text))
-  },
-  // Window resize (add these)
+  // Window resize
   resizeWindow: (width: number, height: number): Promise<boolean> =>
     ipcRenderer.invoke('resize-window', width, height),
   setResizable: (resizable: boolean): Promise<boolean> =>
-    ipcRenderer.invoke('set-resizable', resizable)
+    ipcRenderer.invoke('set-resizable', resizable),
+
+  // ============================================
+  // 🎯 GLOBAL SHORTCUT LISTENERS
+  // ============================================
+  onChatQuestion: (callback: (text: string) => void): void => {
+    ipcRenderer.on('chat-question', (_event, text) => callback(text))
+  },
+  onRegenerateAnswer: (callback: () => void): void => {
+    ipcRenderer.on('regenerate-answer', () => callback())
+  },
+  onCopyAnswer: (callback: () => void): void => {
+    ipcRenderer.on('copy-answer', () => callback())
+  },
+  onTogglePause: (callback: () => void): void => {
+    ipcRenderer.on('toggle-pause', () => callback())
+  },
+  onFocusTestBox: (callback: () => void): void => {
+    ipcRenderer.on('focus-test-box', () => callback())
+  },
+  onClearContent: (callback: () => void): void => {
+    ipcRenderer.on('clear-content', () => callback())
+  }
 }
 
 if (process.contextIsolated) {

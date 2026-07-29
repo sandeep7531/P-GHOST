@@ -11,8 +11,8 @@ function createWindow(): void {
   // 👻 GHOST WINDOW
   // ============================================================
   mainWindow = new BrowserWindow({
-    width: 900,
-    height: 750,
+    width: 480,
+    height: 720,
     x: 100,
     y: 100,
     minWidth: 350,
@@ -28,8 +28,8 @@ function createWindow(): void {
     // Stealth behavior
     alwaysOnTop: true,
     skipTaskbar: true,
-    focusable: false,        // 🎯 CRITICAL: Never steal focus from user
-    acceptFirstMouse: true,  // Accept clicks without needing to focus first
+    focusable: false, // Never steal focus by default
+    acceptFirstMouse: true,
     show: false,
     autoHideMenuBar: true,
 
@@ -47,19 +47,13 @@ function createWindow(): void {
   mainWindow.on('ready-to-show', () => {
     if (!mainWindow) return
 
-    // Apply stealth (invisible to screen share/screenshots)
     mainWindow.setContentProtection(stealthEnabled)
-
-    // Float above fullscreen apps (like Zoom in fullscreen)
     mainWindow.setAlwaysOnTop(true, 'screen-saver')
-
-    // Visible across ALL desktops / spaces
     mainWindow.setVisibleOnAllWorkspaces(true, {
       visibleOnFullScreen: true
     })
 
-    // 🎯 Show WITHOUT stealing focus from the currently-focused app
-    mainWindow.showInactive()
+    mainWindow.showInactive() // Show without stealing focus
 
     console.log(`👻 Ghost window ACTIVE — Stealth: ${stealthEnabled ? 'ON' : 'OFF'}`)
     console.log('🎯 Non-focus-stealing mode — typing stays smooth in other apps')
@@ -81,7 +75,7 @@ function createWindow(): void {
 // 📡 IPC HANDLERS — React can call these functions
 // ============================================================
 function setupIPC(): void {
-  // Toggle stealth mode (for screenshot testing)
+  // Toggle stealth mode
   ipcMain.handle('toggle-stealth', () => {
     stealthEnabled = !stealthEnabled
     mainWindow?.setContentProtection(stealthEnabled)
@@ -97,6 +91,8 @@ function setupIPC(): void {
     console.log(`📋 Copied: ${text.substring(0, 50)}...`)
     return true
   })
+
+  // Enable focus (for editing/typing in overlay)
   ipcMain.handle('enable-focus', () => {
     if (mainWindow) {
       mainWindow.setFocusable(true)
@@ -106,7 +102,7 @@ function setupIPC(): void {
     return true
   })
 
-  // 🎯 Disable focus again (default state)
+  // Disable focus (default state)
   ipcMain.handle('disable-focus', () => {
     if (mainWindow) {
       mainWindow.setFocusable(false)
@@ -115,7 +111,7 @@ function setupIPC(): void {
     return true
   })
 
-  // Resize window (for switching between setup ↔ overlay)
+  // Resize window
   ipcMain.handle('resize-window', (_event, width: number, height: number) => {
     if (mainWindow) {
       mainWindow.setSize(width, height)
@@ -130,7 +126,6 @@ function setupIPC(): void {
     mainWindow?.setResizable(resizable)
     return true
   })
-
 }
 
 // ============================================================
@@ -141,7 +136,7 @@ function registerShortcuts(): void {
   globalShortcut.register('CommandOrControl+Shift+H', () => {
     if (!mainWindow) return
     if (isHidden) {
-      mainWindow.showInactive() // Show WITHOUT stealing focus
+      mainWindow.showInactive()
       isHidden = false
       console.log('👁️  Overlay SHOWN')
     } else {
@@ -150,16 +145,6 @@ function registerShortcuts(): void {
       console.log('🙈 Overlay HIDDEN')
     }
   })
-  
-  if (is.dev) {
-    globalShortcut.register('CommandOrControl+Shift+D', () => {
-      if (mainWindow?.webContents.isDevToolsOpened()) {
-        mainWindow?.webContents.closeDevTools()
-      } else {
-        mainWindow?.webContents.openDevTools({ mode: 'detach' })
-      }
-    })
-  }
 
   // 💬 Cmd+Shift+Q → Send clipboard content as chat question
   globalShortcut.register('CommandOrControl+Shift+Q', () => {
@@ -172,16 +157,65 @@ function registerShortcuts(): void {
     mainWindow?.webContents.send('chat-question', clipboardText)
   })
 
-  console.log('⌨️  Shortcuts registered:')
+  // 🔄 Cmd+Shift+R → Regenerate current answer
+  globalShortcut.register('CommandOrControl+Shift+R', () => {
+    console.log('🔄 Regenerate requested')
+    mainWindow?.webContents.send('regenerate-answer')
+  })
+
+  // 📋 Cmd+Shift+C → Copy current answer
+  globalShortcut.register('CommandOrControl+Shift+C', () => {
+    console.log('📋 Copy answer requested')
+    mainWindow?.webContents.send('copy-answer')
+  })
+
+  // ⏸️ Cmd+Shift+P → Pause/Resume listening
+  globalShortcut.register('CommandOrControl+Shift+P', () => {
+    console.log('⏸️  Pause/Resume toggled')
+    mainWindow?.webContents.send('toggle-pause')
+  })
+
+  // 🎯 Cmd+Shift+F → Focus test question box
+  globalShortcut.register('CommandOrControl+Shift+F', () => {
+    console.log('🎯 Focus test box')
+    mainWindow?.setFocusable(true)
+    mainWindow?.focus()
+    mainWindow?.webContents.send('focus-test-box')
+  })
+
+  // 🗑️ Cmd+Shift+K → Clear transcript + answer
+  globalShortcut.register('CommandOrControl+Shift+K', () => {
+    console.log('🗑️  Clear requested')
+    mainWindow?.webContents.send('clear-content')
+  })
+
+  // 🔧 DEV ONLY: Cmd+Shift+D → Toggle DevTools
+  if (is.dev) {
+    globalShortcut.register('CommandOrControl+Shift+D', () => {
+      if (mainWindow?.webContents.isDevToolsOpened()) {
+        mainWindow?.webContents.closeDevTools()
+      } else {
+        mainWindow?.webContents.openDevTools({ mode: 'detach' })
+      }
+    })
+  }
+
+  console.log('⌨️  Keyboard shortcuts registered:')
   console.log('   Cmd+Shift+H → Hide/Show overlay')
   console.log('   Cmd+Shift+Q → Ask clipboard question')
+  console.log('   Cmd+Shift+R → Regenerate answer')
+  console.log('   Cmd+Shift+C → Copy answer')
+  console.log('   Cmd+Shift+P → Pause/Resume listening')
+  console.log('   Cmd+Shift+F → Focus test box')
+  console.log('   Cmd+Shift+K → Clear transcript+answer')
+  if (is.dev) console.log('   Cmd+Shift+D → Toggle DevTools')
 }
 
 // ============================================================
 // 🚀 APP LIFECYCLE
 // ============================================================
 app.whenReady().then(() => {
-  // Hide dock icon on macOS (fully invisible from dock)
+  // Hide dock icon on macOS
   if (process.platform === 'darwin') {
     app.dock?.hide()
   }
@@ -197,7 +231,6 @@ app.whenReady().then(() => {
   setupIPC()
   createWindow()
   registerShortcuts()
-
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()

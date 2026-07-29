@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
-import { useSessionStore } from './store/sessionStore'
 import { useNavigate } from 'react-router-dom'
+import { useSessionStore } from './store/sessionStore'
+import MessageRenderer from './components/MessageRenderer'
+
 // ============================================================
 // 🎯 TYPES for messages from Python backend
 // ============================================================
@@ -17,6 +19,9 @@ type WSMessage =
 // 🎨 GHOST OVERLAY
 // ============================================================
 function Overlay(): JSX.Element {
+  const navigate = useNavigate()
+  const sessionData = useSessionStore()
+
   const [connected, setConnected] = useState(false)
   const [status, setStatus] = useState<'idle' | 'listening' | 'thinking'>('idle')
   const [transcript, setTranscript] = useState<string>('Waiting for interviewer to speak...')
@@ -24,18 +29,42 @@ function Overlay(): JSX.Element {
   const [sessionTime, setSessionTime] = useState<string>('00:00')
   const [stealthOn, setStealthOn] = useState<boolean>(true)
   const [copyFeedback, setCopyFeedback] = useState<string>('')
-  const [testQuestion, setTestQuestion] = useState<string>('')
-  const [showTestBox, setShowTestBox] = useState<boolean>(true)
-  const testTextareaRef = useRef<HTMLTextAreaElement | null>(null)
-  // 🆕 Edit mode state
+
+  // Edit mode
   const [isEditing, setIsEditing] = useState<boolean>(false)
   const [editedText, setEditedText] = useState<string>('')
-  const sessionData = useSessionStore()
+
+  // Test box
+  const [testQuestion, setTestQuestion] = useState<string>('')
+  const [showTestBox, setShowTestBox] = useState<boolean>(true)
+
+  // Shortcut states
+  const [isPaused, setIsPaused] = useState<boolean>(false)
+  const [lastQuestion, setLastQuestion] = useState<string>('')
+
   const wsRef = useRef<WebSocket | null>(null)
   const reconnectTimerRef = useRef<NodeJS.Timeout | null>(null)
   const sessionStartRef = useRef<number>(Date.now())
   const editTextareaRef = useRef<HTMLTextAreaElement | null>(null)
-  const navigate = useNavigate()
+  const testTextareaRef = useRef<HTMLTextAreaElement | null>(null)
+
+  // 🎯 Refs to always access LATEST state (fixes stale closure in shortcuts)
+  const lastQuestionRef = useRef<string>('')
+  const answerRef = useRef<string>('')
+  const statusRef = useRef<'idle' | 'listening' | 'thinking'>('idle')
+  const isPausedRef = useRef<boolean>(false)
+
+  // 🛡️ Debounce timestamps for shortcuts
+  const shortcutTimestampsRef = useRef<{ [key: string]: number }>({
+    regenerate: 0,
+    copy: 0,
+    pause: 0,
+    clear: 0,
+    focus: 0,
+    chatQuestion: 0
+  })
+  const DEBOUNCE_MS = 1500
+
   // ============================================================
   // ⏱️ SESSION TIMER
   // ============================================================
@@ -48,27 +77,32 @@ function Overlay(): JSX.Element {
     }, 1000)
     return () => clearInterval(interval)
   }, [])
+
   // ============================================================
-  // 📥 SEND SESSION DATA TO BACKEND (once WebSocket connects)
+  // 🔄 KEEP REFS IN SYNC WITH STATE (fixes stale closure bug)
   // ============================================================
   useEffect(() => {
-    if (!connected) return
+    lastQuestionRef.current = lastQuestion
+  }, [lastQuestion])
 
-    const sessionData = useSessionStore.getState()
+  useEffect(() => {
+    answerRef.current = answer
+  }, [answer])
 
-    if (sessionData.isSetupComplete && wsRef.current?.readyState === WebSocket.OPEN) {
-      console.log('📥 Sending session context to backend...')
-      wsRef.current.send(
-        JSON.stringify({
-          type: 'load_session',
-          resume: sessionData.resume,
-          company: sessionData.company,
-          position: sessionData.position,
-          job_description: sessionData.jobDescription
-        })
-      )
-    }
-  }, [connected])
+  useEffect(() => {
+    statusRef.current = status
+  }, [status])
+
+  useEffect(() => {
+    isPausedRef.current = isPaused
+  }, [isPaused])
+
+  // ============================================================
+  // 📸 INITIAL STEALTH STATUS
+  // ============================================================
+  useEffect(() => {
+    window.api.getStealthStatus().then(setStealthOn)
+  }, [])
 
   // ============================================================
   // 📡 WEBSOCKET
@@ -89,9 +123,10 @@ function Overlay(): JSX.Element {
           break
         case 'transcript':
           setTranscript(msg.text)
+          setLastQuestion(msg.text)
           setStatus('thinking')
           setAnswer('')
-          setIsEditing(false) // Exit edit mode on new transcript
+          setIsEditing(false)
           break
         case 'answer_start':
           setStatus('thinking')
@@ -106,6 +141,10 @@ function Overlay(): JSX.Element {
         case 'error':
           console.error('Backend error:', msg.message)
           setStatus('idle')
+          if (msg.message.includes('Already generating')) {
+            setCopyFeedback('⏳ Wait for current answer...')
+            setTimeout(() => setCopyFeedback(''), 1500)
+          }
           break
       }
     }
@@ -168,13 +207,57 @@ function Overlay(): JSX.Element {
   }, [])
 
   // ============================================================
-  // ⌨️ CLIPBOARD QUESTION
+  // 📥 SEND SESSION CONTEXT TO BACKEND
+  // ============================================================
+  useEffect(() => {
+    if (!connected) return
+    const data = useSessionStore.getState()
+    if (data.isSetupComplete && wsRef.current?.readyState === WebSocket.OPEN) {
+      console.log('📥 Sending session context to backend...')
+      wsRef.current.send(
+        JSON.stringify({
+          type: 'load_session',
+          resume: data.resume,
+          company: data.company,
+          position: data.position,
+          job_description: data.jobDescription
+        })
+      )
+    }
+  }, [connected])
+
+  // ============================================================
+  // 🛡️ DEBOUNCE HELPER for shortcuts
+  // ============================================================
+  const canFireShortcut = (key: string): boolean => {
+    const now = Date.now()
+    const lastFired = shortcutTimestampsRef.current[key] || 0
+    if (now - lastFired < DEBOUNCE_MS) {
+      console.log(`⏳ Shortcut "${key}" blocked (debounce)`)
+      return false
+    }
+    shortcutTimestampsRef.current[key] = now
+    return true
+  }
+
+  // ============================================================
+  // ⌨️ LISTEN FOR CLIPBOARD QUESTION (Cmd+Shift+Q)
   // ============================================================
   useEffect(() => {
     window.api.onChatQuestion((text: string) => {
+      if (!canFireShortcut('chatQuestion')) return
+
+      // 🛡️ Block if AI is thinking (use REF!)
+      if (statusRef.current === 'thinking') {
+        setCopyFeedback('⏳ Wait for current answer...')
+        setTimeout(() => setCopyFeedback(''), 1500)
+        return
+      }
+
       if (wsRef.current?.readyState === WebSocket.OPEN) {
         wsRef.current.send(JSON.stringify({ type: 'chat_question', text }))
         setTranscript(`💬 [Chat] ${text}`)
+        setLastQuestion(text)
         setStatus('thinking')
         setAnswer('')
         setIsEditing(false)
@@ -183,16 +266,100 @@ function Overlay(): JSX.Element {
   }, [])
 
   // ============================================================
+  // ⌨️ HANDLE GLOBAL KEYBOARD SHORTCUTS (using refs to avoid stale closures)
+  // ============================================================
+  useEffect(() => {
+    // 🔄 Cmd+Shift+R → Regenerate current answer
+    window.api.onRegenerateAnswer(() => {
+      if (!canFireShortcut('regenerate')) return
+
+      // Use REF to get latest values
+      if (statusRef.current === 'thinking') {
+        console.log('🔄 Regenerate blocked (already generating)')
+        setCopyFeedback('⏳ Wait for current answer...')
+        setTimeout(() => setCopyFeedback(''), 1500)
+        return
+      }
+
+      const currentLastQuestion = lastQuestionRef.current
+      if (!currentLastQuestion || wsRef.current?.readyState !== WebSocket.OPEN) {
+        console.log('🔄 No last question available')
+        setCopyFeedback('No previous question to regenerate')
+        setTimeout(() => setCopyFeedback(''), 1500)
+        return
+      }
+
+      console.log('🔄 Regenerating answer for:', currentLastQuestion)
+      wsRef.current.send(
+        JSON.stringify({ type: 'chat_question', text: currentLastQuestion })
+      )
+      setStatus('thinking')
+      setAnswer('')
+      setCopyFeedback('Regenerating...')
+      setTimeout(() => setCopyFeedback(''), 1200)
+    })
+
+    // 📋 Cmd+Shift+C → Copy current answer
+    window.api.onCopyAnswer(() => {
+      if (!canFireShortcut('copy')) return
+      const currentAnswer = answerRef.current
+      if (!currentAnswer) {
+        setCopyFeedback('No answer to copy')
+        setTimeout(() => setCopyFeedback(''), 1500)
+        return
+      }
+      window.api.copyToClipboard(currentAnswer)
+      setCopyFeedback('Answer copied!')
+      setTimeout(() => setCopyFeedback(''), 1500)
+    })
+
+    // ⏸️ Cmd+Shift+P → Pause/Resume listening
+    window.api.onTogglePause(() => {
+      if (!canFireShortcut('pause')) return
+      if (wsRef.current?.readyState !== WebSocket.OPEN) return
+
+      const newPaused = !isPausedRef.current
+      setIsPaused(newPaused)
+      wsRef.current.send(
+        JSON.stringify({
+          type: newPaused ? 'pause_listening' : 'resume_listening'
+        })
+      )
+      setCopyFeedback(newPaused ? '⏸️ Paused' : '▶️ Resumed')
+      setTimeout(() => setCopyFeedback(''), 1500)
+    })
+
+    // 🎯 Cmd+Shift+F → Focus test question box
+    window.api.onFocusTestBox(() => {
+      if (!canFireShortcut('focus')) return
+      setShowTestBox(true)
+      setTimeout(() => testTextareaRef.current?.focus(), 100)
+    })
+
+    // 🗑️ Cmd+Shift+K → Clear transcript + answer
+    window.api.onClearContent(() => {
+      if (!canFireShortcut('clear')) return
+      setTranscript('Waiting for interviewer to speak...')
+      setAnswer('')
+      setLastQuestion('')
+      setStatus('idle')
+      setCopyFeedback('Cleared!')
+      setTimeout(() => setCopyFeedback(''), 1200)
+    })
+  }, []) // ← Empty dependency array! Refs handle latest state
+
+  // ============================================================
   // ✏️ EDIT MODE HANDLERS
   // ============================================================
   const handleStartEdit = async (): Promise<void> => {
-    setEditedText(transcript.replace(/^💬 \[Chat\] /, '').replace(/^✏️ \[Edited\] /, ''))
+    setEditedText(
+      transcript
+        .replace(/^💬 \[Chat\] /, '')
+        .replace(/^✏️ \[Edited\] /, '')
+        .replace(/^🧪 \[Test\] /, '')
+    )
     setIsEditing(true)
-
-    // 🎯 Enable window focus so user can type
     await window.api.enableFocus()
-
-    // Focus textarea after render
     setTimeout(() => {
       editTextareaRef.current?.focus()
       editTextareaRef.current?.select()
@@ -202,8 +369,6 @@ function Overlay(): JSX.Element {
   const handleCancelEdit = async (): Promise<void> => {
     setIsEditing(false)
     setEditedText('')
-
-    // 🎯 Disable focus again so typing in other apps stays smooth
     await window.api.disableFocus()
   }
 
@@ -211,29 +376,71 @@ function Overlay(): JSX.Element {
     const question = editedText.trim()
     if (!question) return
 
+    if (status === 'thinking') {
+      setCopyFeedback('⏳ Wait for current answer...')
+      setTimeout(() => setCopyFeedback(''), 1500)
+      return
+    }
+
     if (wsRef.current?.readyState === WebSocket.OPEN) {
       wsRef.current.send(JSON.stringify({ type: 'chat_question', text: question }))
       setTranscript(`✏️ [Edited] ${question}`)
+      setLastQuestion(question)
       setStatus('thinking')
       setAnswer('')
       setIsEditing(false)
-
-      // 🎯 Disable focus after submit
       await window.api.disableFocus()
     }
   }
 
   const handleTextareaKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>): void => {
-    // Cmd/Ctrl + Enter → submit
     if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
       e.preventDefault()
       handleRegenerate()
     }
-    // Escape → cancel
     if (e.key === 'Escape') {
       e.preventDefault()
       handleCancelEdit()
     }
+  }
+
+  // ============================================================
+  // 🧪 TEST QUESTION HANDLER
+  // ============================================================
+  const handleTestQuestion = async (): Promise<void> => {
+    const question = testQuestion.trim()
+    if (!question) return
+
+    if (status === 'thinking') {
+      setCopyFeedback('⏳ Wait for current answer...')
+      setTimeout(() => setCopyFeedback(''), 1500)
+      return
+    }
+
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ type: 'chat_question', text: question }))
+      setTranscript(`🧪 [Test] ${question}`)
+      setLastQuestion(question)
+      setStatus('thinking')
+      setAnswer('')
+      setTestQuestion('')
+    }
+  }
+
+  const handleTestKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>): void => {
+    if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+      e.preventDefault()
+      handleTestQuestion()
+    }
+  }
+
+  const handleTestBoxFocus = async (): Promise<void> => {
+    await window.api.enableFocus()
+    setTimeout(() => testTextareaRef.current?.focus(), 50)
+  }
+
+  const handleTestBoxBlur = async (): Promise<void> => {
+    await window.api.disableFocus()
   }
 
   // ============================================================
@@ -252,44 +459,11 @@ function Overlay(): JSX.Element {
   }
 
   // ============================================================
-  // 🧪 TEST QUESTION HANDLER
-  // ============================================================
-  const handleTestQuestion = async (): Promise<void> => {
-    const question = testQuestion.trim()
-    if (!question) return
-
-    if (wsRef.current?.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify({ type: 'chat_question', text: question }))
-      setTranscript(`🧪 [Test] ${question}`)
-      setStatus('thinking')
-      setAnswer('')
-      setTestQuestion('') // Clear box after sending
-    }
-  }
-
-  const handleTestKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>): void => {
-    // Cmd/Ctrl + Enter → submit
-    if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
-      e.preventDefault()
-      handleTestQuestion()
-    }
-  }
-
-  // Focus test box on click
-  const handleTestBoxFocus = async (): Promise<void> => {
-    await window.api.enableFocus()
-    setTimeout(() => testTextareaRef.current?.focus(), 50)
-  }
-
-  const handleTestBoxBlur = async (): Promise<void> => {
-    await window.api.disableFocus()
-  }
-
-  // ============================================================
   // 🎨 STATUS HELPERS
   // ============================================================
   const getStatusColor = (): string => {
     if (!connected) return '#ff4757'
+    if (isPaused) return '#ffa502'
     if (status === 'listening') return '#ffa502'
     if (status === 'thinking') return '#3742fa'
     return '#2ed573'
@@ -297,6 +471,7 @@ function Overlay(): JSX.Element {
 
   const getStatusText = (): string => {
     if (!connected) return 'Disconnected'
+    if (isPaused) return '⏸ Paused'
     if (status === 'listening') return 'Listening...'
     if (status === 'thinking') return 'Thinking...'
     return 'Ready'
@@ -321,9 +496,7 @@ function Overlay(): JSX.Element {
         backdropFilter: 'blur(20px)'
       }}
     >
-      {/* ============================================ */}
-      {/* HEADER (draggable)                          */}
-      {/* ============================================ */}
+      {/* HEADER (draggable) */}
       <div
         style={
           {
@@ -341,7 +514,7 @@ function Overlay(): JSX.Element {
           } as React.CSSProperties
         }
       >
-        <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '10px', overflow: 'hidden' }}>
           <span style={{ color: getStatusColor(), fontSize: '10px' }}>●</span>
           <span style={{ fontSize: '13px', fontWeight: 600 }}>👻 GHOST</span>
           {sessionData.company && (
@@ -352,22 +525,23 @@ function Overlay(): JSX.Element {
                 background: 'rgba(92, 108, 255, 0.1)',
                 padding: '2px 8px',
                 borderRadius: '10px',
-                marginLeft: '4px'
+                marginLeft: '4px',
+                whiteSpace: 'nowrap',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis'
               }}
             >
               {sessionData.company} · {sessionData.position}
             </span>
           )}
-          <span style={{ fontSize: '10px', opacity: 0.5, marginLeft: 'auto' }}>{getStatusText()}</span>
         </div>
-        <div style={{ fontSize: '11px', opacity: 0.6, fontFamily: 'monospace' }}>
-          {sessionTime}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+          <span style={{ fontSize: '10px', opacity: 0.5 }}>{getStatusText()}</span>
+          <span style={{ fontSize: '11px', opacity: 0.6, fontFamily: 'monospace' }}>{sessionTime}</span>
         </div>
       </div>
 
-      {/* ============================================ */}
-      {/* TOGGLE BAR                                  */}
-      {/* ============================================ */}
+      {/* TOGGLE BAR */}
       <div
         style={
           {
@@ -393,13 +567,14 @@ function Overlay(): JSX.Element {
             padding: '4px 10px',
             fontSize: '11px',
             fontWeight: 500,
-            cursor: 'pointer'
+            cursor: 'pointer',
+            transition: 'all 0.2s'
           }}
           title={stealthOn ? 'Invisible in screenshots' : 'Visible in screenshots'}
         >
           {stealthOn ? '👻 Stealth ON' : '📸 Stealth OFF'}
         </button>
-        {/* Back to Setup button */}
+
         <button
           onClick={async () => {
             await window.api.enableFocus()
@@ -425,19 +600,21 @@ function Overlay(): JSX.Element {
           <span
             style={{
               fontSize: '10px',
-              color: '#2ed573',
+              color: copyFeedback.includes('⏳') || copyFeedback.includes('No ')
+                ? '#ffa502'
+                : '#2ed573',
               marginLeft: 'auto',
               fontWeight: 600
             }}
           >
-            ✓ {copyFeedback}
+            {copyFeedback.includes('⏳') || copyFeedback.includes('No ')
+              ? copyFeedback
+              : `✓ ${copyFeedback}`}
           </span>
         )}
       </div>
 
-      {/* ============================================ */}
-      {/* MAIN CONTENT                                */}
-      {/* ============================================ */}
+      {/* MAIN CONTENT */}
       <div
         style={
           {
@@ -448,10 +625,7 @@ function Overlay(): JSX.Element {
           } as React.CSSProperties
         }
       >
-
-        {/* ============================================ */}
-        {/* 🧪 TEST QUESTION BOX (for pre-interview)    */}
-        {/* ============================================ */}
+        {/* Test Question Box */}
         {showTestBox && (
           <div
             style={{
@@ -530,35 +704,38 @@ function Overlay(): JSX.Element {
                 marginTop: '8px'
               }}
             >
-              <span style={{ fontSize: '10px', opacity: 0.5 }}>
-                💡 Cmd+Enter to send
-              </span>
+              <span style={{ fontSize: '10px', opacity: 0.5 }}>💡 Cmd+Enter to send</span>
               <button
                 onClick={handleTestQuestion}
                 disabled={!testQuestion.trim() || status === 'thinking'}
                 style={{
-                  background: testQuestion.trim()
-                    ? 'linear-gradient(135deg, #5c6cff 0%, #3742fa 100%)'
-                    : 'rgba(255, 255, 255, 0.05)',
+                  background:
+                    testQuestion.trim() && status !== 'thinking'
+                      ? 'linear-gradient(135deg, #5c6cff 0%, #3742fa 100%)'
+                      : 'rgba(255, 255, 255, 0.05)',
                   border: 'none',
-                  color: testQuestion.trim() ? 'white' : 'rgba(255, 255, 255, 0.3)',
+                  color:
+                    testQuestion.trim() && status !== 'thinking'
+                      ? 'white'
+                      : 'rgba(255, 255, 255, 0.3)',
                   borderRadius: '6px',
                   padding: '6px 14px',
                   fontSize: '11px',
                   fontWeight: 700,
-                  cursor: testQuestion.trim() ? 'pointer' : 'not-allowed',
-                  boxShadow: testQuestion.trim()
-                    ? '0 2px 8px rgba(55, 66, 250, 0.4)'
-                    : 'none'
+                  cursor:
+                    testQuestion.trim() && status !== 'thinking' ? 'pointer' : 'not-allowed',
+                  boxShadow:
+                    testQuestion.trim() && status !== 'thinking'
+                      ? '0 2px 8px rgba(55, 66, 250, 0.4)'
+                      : 'none'
                 }}
               >
-                🚀 ASK AI
+                {status === 'thinking' ? '⏳ THINKING...' : '🚀 ASK AI'}
               </button>
             </div>
           </div>
         )}
 
-        {/* Show button to bring back test box if hidden */}
         {!showTestBox && (
           <button
             onClick={() => setShowTestBox(true)}
@@ -579,9 +756,7 @@ function Overlay(): JSX.Element {
           </button>
         )}
 
-        {/* ============================================ */}
-        {/* 📝 TRANSCRIPT / EDIT SECTION                */}
-        {/* ============================================ */}
+        {/* Transcript / Edit Section */}
         <div style={{ marginBottom: '16px' }}>
           <div
             style={{
@@ -617,7 +792,7 @@ function Overlay(): JSX.Element {
                       fontWeight: 600,
                       cursor: 'pointer'
                     }}
-                    title="Edit the transcribed question and regenerate"
+                    title="Edit and regenerate"
                   >
                     ✏️ EDIT
                   </button>
@@ -633,7 +808,7 @@ function Overlay(): JSX.Element {
                       fontWeight: 600,
                       cursor: 'pointer'
                     }}
-                    title="Copy question to clipboard"
+                    title="Copy question"
                   >
                     📋 COPY
                   </button>
@@ -659,7 +834,6 @@ function Overlay(): JSX.Element {
             </div>
           </div>
 
-          {/* --- Display Mode OR Edit Mode --- */}
           {!isEditing ? (
             <div
               onDoubleClick={handleStartEdit}
@@ -718,33 +892,37 @@ function Overlay(): JSX.Element {
                 </span>
                 <button
                   onClick={handleRegenerate}
-                  disabled={!editedText.trim()}
+                  disabled={!editedText.trim() || status === 'thinking'}
                   style={{
-                    background: editedText.trim()
-                      ? 'linear-gradient(135deg, #5c6cff 0%, #3742fa 100%)'
-                      : 'rgba(255, 255, 255, 0.05)',
+                    background:
+                      editedText.trim() && status !== 'thinking'
+                        ? 'linear-gradient(135deg, #5c6cff 0%, #3742fa 100%)'
+                        : 'rgba(255, 255, 255, 0.05)',
                     border: 'none',
-                    color: editedText.trim() ? 'white' : 'rgba(255,255,255,0.3)',
+                    color:
+                      editedText.trim() && status !== 'thinking'
+                        ? 'white'
+                        : 'rgba(255,255,255,0.3)',
                     borderRadius: '6px',
                     padding: '6px 14px',
                     fontSize: '11px',
                     fontWeight: 600,
-                    cursor: editedText.trim() ? 'pointer' : 'not-allowed',
-                    boxShadow: editedText.trim()
-                      ? '0 2px 8px rgba(55, 66, 250, 0.4)'
-                      : 'none'
+                    cursor:
+                      editedText.trim() && status !== 'thinking' ? 'pointer' : 'not-allowed',
+                    boxShadow:
+                      editedText.trim() && status !== 'thinking'
+                        ? '0 2px 8px rgba(55, 66, 250, 0.4)'
+                        : 'none'
                   }}
                 >
-                  🔄 REGENERATE ANSWER
+                  {status === 'thinking' ? '⏳ WAIT...' : '🔄 REGENERATE'}
                 </button>
               </div>
             </div>
           )}
         </div>
 
-        {/* ============================================ */}
-        {/* 💬 ANSWER SECTION                           */}
-        {/* ============================================ */}
+        {/* Answer Section */}
         <div>
           <div
             style={{
@@ -793,15 +971,16 @@ function Overlay(): JSX.Element {
                 border: '1px solid rgba(46, 213, 115, 0.15)',
                 borderRadius: '8px',
                 minHeight: '80px',
-                whiteSpace: 'pre-wrap',
                 userSelect: 'text',
                 WebkitUserSelect: 'text',
                 cursor: answer ? 'copy' : 'default'
               } as React.CSSProperties
             }
-            title={answer ? 'Double-click to copy' : ''}
+            title={answer ? 'Double-click to copy entire answer' : ''}
           >
-            {answer || (
+            {answer ? (
+              <MessageRenderer content={answer} onCopyCode={(code) => handleCopy(code, 'Code')} />
+            ) : (
               <span style={{ opacity: 0.4, fontStyle: 'italic' }}>
                 {status === 'thinking'
                   ? 'Generating answer...'
@@ -812,9 +991,7 @@ function Overlay(): JSX.Element {
         </div>
       </div>
 
-      {/* ============================================ */}
-      {/* BOTTOM STATUS BAR                           */}
-      {/* ============================================ */}
+      {/* BOTTOM STATUS BAR */}
       <div
         style={{
           height: '28px',
@@ -825,15 +1002,15 @@ function Overlay(): JSX.Element {
           justifyContent: 'space-between',
           padding: '0 15px',
           fontSize: '10px',
-          opacity: 0.5,
+          opacity: 0.6,
           flexShrink: 0
         }}
       >
         <span>{connected ? '🟢 Connected to backend' : '🔴 Backend offline'}</span>
-        <span>Local · Private · Free</span>
+        <span>⌘⇧H hide · ⌘⇧Q ask · ⌘⇧R regen · ⌘⇧K clear</span>
       </div>
     </div>
   )
 }
 
-export default Overlay;
+export default Overlay
