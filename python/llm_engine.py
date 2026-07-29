@@ -1,5 +1,8 @@
 """
-GHOST — Smart LLM Engine (v9 — ChatGPT-Style Structured Responses)
+GHOST — Smart LLM Engine (v10 — Hybrid Local + Groq Cloud)
+- Smart router: LOCAL for personal, CLOUD for technical
+- Fallback to local if cloud fails
+- User can switch modes: hybrid | local | cloud
 """
 
 import json
@@ -8,25 +11,27 @@ import time
 import os
 import requests
 from typing import Callable
-
+from groq_client import GroqClient
 
 # ============================================================
 # CONFIGURATION
 # ============================================================
 OLLAMA_URL = "http://localhost:11434/api/generate"
-OLLAMA_MODEL = "mistral:7b-instruct-q4_K_M"
+# OLLAMA_MODEL = "mistral:7b-instruct-q4_K_M"
+OLLAMA_MODEL = "qwen2.5-coder:7b-instruct-q4_K_M"
+
 
 MAX_HISTORY = 3
-MAX_TOKENS = 300
+MAX_TOKENS = 600
 TEMPERATURE = 0.7
-KEEP_ALIVE = "30m"
-NUM_CTX = 4096
+KEEP_ALIVE = "40m"
+NUM_CTX = 5096
 NUM_THREAD = 8
 REQUEST_TIMEOUT = 45
 
-RESUME_MAX_CHARS = 1200
-JD_MAX_CHARS = 400
-HISTORY_ANSWER_MAX_CHARS = 250
+RESUME_MAX_CHARS = 5000
+JD_MAX_CHARS = 1200
+HISTORY_ANSWER_MAX_CHARS = 650
 
 RULES_FILE = os.path.join(os.path.dirname(__file__), "rules.json")
 
@@ -519,12 +524,13 @@ YOUR ANSWER:"""
 
 
 # ============================================================
-# MAIN LLM ENGINE
+# MAIN LLM ENGINE (v10 — Hybrid Local + Cloud)
 # ============================================================
 class GhostLLM:
     def __init__(self):
         self.history = HistoryManager()
         self.ollama = OllamaClient()
+        self.groq = GroqClient()  # 🆕 Cloud client
         self.session_context = {
             "resume": "",
             "company": "",
@@ -533,8 +539,54 @@ class GhostLLM:
             "loaded": False
         }
         self.is_generating = False
+        self.ai_mode = "hybrid"  # 🆕 hybrid | local | cloud
         self.ollama.warm_up()
 
+    # ─────────────────────────────────
+    # 🎯 AI MODE MANAGEMENT
+    # ─────────────────────────────────
+    def set_ai_mode(self, mode):
+        """Change AI routing mode: hybrid, local, or cloud."""
+        if mode in ("hybrid", "local", "cloud"):
+            self.ai_mode = mode
+            print(f"🎯 AI mode set to: {mode}")
+            return True
+        return False
+
+    def _pick_engine(self, question_type):
+        """
+        Smart router: LOCAL (Mistral) or CLOUD (Groq).
+
+        Rules:
+        - LOCAL always if user picked local mode
+        - CLOUD always if user picked cloud mode (with fallback)
+        - HYBRID: LOCAL for personal, CLOUD for technical
+        - Fallback to LOCAL if Groq unavailable
+        """
+        # User forced local
+        if self.ai_mode == "local":
+            return "local"
+
+        # User forced cloud (if available)
+        if self.ai_mode == "cloud" and self.groq.is_available():
+            return "cloud"
+
+        # Hybrid mode: smart routing
+        # Personal questions → LOCAL (privacy, uses resume heavily)
+        if question_type in ("hr", "behavioral", "recap"):
+            return "local"
+
+        # Technical questions → CLOUD (10x faster + smarter)
+        if question_type in ("code_concept", "concept", "comparison",
+                             "coding", "system_design", "how_does"):
+            return "cloud" if self.groq.is_available() else "local"
+
+        # Default fallback → LOCAL
+        return "local"
+
+    # ─────────────────────────────────
+    # SESSION MANAGEMENT
+    # ─────────────────────────────────
     def load_session(self, resume, company, position, job_description):
         self.session_context = {
             "resume": resume,
@@ -550,6 +602,7 @@ class GhostLLM:
         print(f"   Position: {position}")
         print(f"   Resume: {len(resume)} chars (using first {RESUME_MAX_CHARS})")
         print(f"   JD: {len(job_description)} chars (using first {JD_MAX_CHARS})")
+        print(f"   AI Mode: {self.ai_mode}")
         print(f"{'='*60}\n")
 
     def clear_session(self):
@@ -691,6 +744,9 @@ class GhostLLM:
 
         return cleaned
 
+    # ─────────────────────────────────
+    # 🎯 MAIN GENERATE METHOD (with hybrid routing)
+    # ─────────────────────────────────
     def generate(self, question, on_start, on_token, on_done, on_error):
         # LOCK: Reject if already generating
         if self.is_generating:
@@ -706,6 +762,11 @@ class GhostLLM:
             q_type, max_tokens_for_q = self._detect_question_type(question)
             print(f"Question type: {q_type} (max_tokens: {max_tokens_for_q})")
 
+            # 🎯 SMART ROUTER: pick engine
+            engine = self._pick_engine(q_type)
+            engine_name = "Groq Llama 70B (Cloud)" if engine == "cloud" else "Local Mistral 7B"
+            print(f"🎯 Engine: {engine.upper()} ({engine_name})")
+
             builder = PromptBuilder(self.session_context, self.history)
             prompt = builder.build(question, question_type=q_type)
 
@@ -715,12 +776,30 @@ class GhostLLM:
             on_start({
                 "question": question,
                 "mode": q_type,
+                "engine": engine,
                 "is_follow_up": len(self.history.history) > 0
             })
 
-            full_answer, duration, first_token = self.ollama.stream(
-                prompt, on_token, max_tokens=max_tokens_for_q
-            )
+            # Route to selected engine with fallback
+            try:
+                if engine == "cloud":
+                    full_answer, duration, first_token = self.groq.stream(
+                        prompt, on_token, max_tokens=max_tokens_for_q
+                    )
+                else:
+                    full_answer, duration, first_token = self.ollama.stream(
+                        prompt, on_token, max_tokens=max_tokens_for_q
+                    )
+            except Exception as engine_error:
+                # 🛡️ Fallback: if cloud fails, try local
+                if engine == "cloud":
+                    print(f"⚠️ Cloud failed ({engine_error}), falling back to LOCAL")
+                    engine = "local"
+                    full_answer, duration, first_token = self.ollama.stream(
+                        prompt, on_token, max_tokens=max_tokens_for_q
+                    )
+                else:
+                    raise
 
             cleaned_answer = self._clean_response(full_answer)
 
@@ -729,13 +808,14 @@ class GhostLLM:
 
             word_count = len(cleaned_answer.split())
             speed = word_count / duration if duration > 0 else 0
-            print(f"\nDone in {duration:.2f}s | first_token={first_token:.2f}s | "
-                  f"{word_count} words | {speed:.1f} w/s | type={q_type}")
+            print(f"\n✅ Done in {duration:.2f}s | first_token={first_token:.2f}s | "
+                  f"{word_count} words | {speed:.1f} w/s | type={q_type} | engine={engine}")
 
             on_done({
                 "full_answer": cleaned_answer,
                 "duration": duration,
                 "mode": q_type,
+                "engine": engine,
                 "word_count": word_count,
                 "is_follow_up": len(self.history.history) > 1
             })
@@ -745,4 +825,4 @@ class GhostLLM:
             on_error(str(e))
         finally:
             self.is_generating = False
-            print("Lock released")
+            print("🔓 Lock released")

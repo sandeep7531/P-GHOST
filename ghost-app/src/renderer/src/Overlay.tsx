@@ -29,6 +29,7 @@ function Overlay(): JSX.Element {
   const [sessionTime, setSessionTime] = useState<string>('00:00')
   const [stealthOn, setStealthOn] = useState<boolean>(true)
   const [copyFeedback, setCopyFeedback] = useState<string>('')
+  const [aiMode, setAIMode] = useState<'local' | 'hybrid' | 'cloud'>('hybrid')
 
   // Edit mode
   const [isEditing, setIsEditing] = useState<boolean>(false)
@@ -102,6 +103,17 @@ function Overlay(): JSX.Element {
   // ============================================================
   useEffect(() => {
     window.api.getStealthStatus().then(setStealthOn)
+  }, [])
+
+  // ============================================================
+  // 🎯 LOAD INITIAL AI MODE
+  // ============================================================
+  useEffect(() => {
+    window.api.getAIMode().then((mode) => {
+      if (mode === 'local' || mode === 'hybrid' || mode === 'cloud') {
+        setAIMode(mode as 'local' | 'hybrid' | 'cloud')
+      }
+    })
   }, [])
 
   // ============================================================
@@ -451,6 +463,22 @@ function Overlay(): JSX.Element {
     setStealthOn(newStatus)
   }
 
+  const handleAIModeChange = async (mode: 'local' | 'hybrid' | 'cloud'): Promise<void> => {
+    setAIMode(mode)
+
+    // Send to backend via WebSocket
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ type: 'set_ai_mode', mode }))
+    }
+
+    // Store in local Electron for persistence
+    await window.api.setAIMode(mode)
+
+    const label = mode === 'local' ? '🏠 Local' : mode === 'hybrid' ? '⚡ Hybrid' : '☁️ Cloud'
+    setCopyFeedback(`Switched to ${label}`)
+    setTimeout(() => setCopyFeedback(''), 1500)
+  }
+
   const handleCopy = async (text: string, label: string): Promise<void> => {
     if (!text) return
     await window.api.copyToClipboard(text)
@@ -595,6 +623,71 @@ function Overlay(): JSX.Element {
         >
           ⚙️ Setup
         </button>
+        {/* AI Mode Selector */}
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: '2px',
+            marginLeft: '8px',
+            padding: '2px',
+            background: 'rgba(255, 255, 255, 0.05)',
+            border: '1px solid rgba(255, 255, 255, 0.1)',
+            borderRadius: '6px'
+          }}
+        >
+          <button
+            onClick={() => handleAIModeChange('local')}
+            title="Local only (100% private, slower)"
+            style={{
+              background: aiMode === 'local' ? 'rgba(255, 165, 2, 0.25)' : 'transparent',
+              color: aiMode === 'local' ? '#ffa502' : 'rgba(255, 255, 255, 0.5)',
+              border: 'none',
+              borderRadius: '4px',
+              padding: '3px 8px',
+              fontSize: '10px',
+              fontWeight: 600,
+              cursor: 'pointer',
+              transition: 'all 0.2s'
+            }}
+          >
+            🏠 Local
+          </button>
+          <button
+            onClick={() => handleAIModeChange('hybrid')}
+            title="Smart routing (recommended: fast + private)"
+            style={{
+              background: aiMode === 'hybrid' ? 'rgba(92, 108, 255, 0.25)' : 'transparent',
+              color: aiMode === 'hybrid' ? '#5c6cff' : 'rgba(255, 255, 255, 0.5)',
+              border: 'none',
+              borderRadius: '4px',
+              padding: '3px 8px',
+              fontSize: '10px',
+              fontWeight: 600,
+              cursor: 'pointer',
+              transition: 'all 0.2s'
+            }}
+          >
+            ⚡ Hybrid
+          </button>
+          <button
+            onClick={() => handleAIModeChange('cloud')}
+            title="Cloud only (fastest, uses Groq)"
+            style={{
+              background: aiMode === 'cloud' ? 'rgba(46, 213, 115, 0.25)' : 'transparent',
+              color: aiMode === 'cloud' ? '#2ed573' : 'rgba(255, 255, 255, 0.5)',
+              border: 'none',
+              borderRadius: '4px',
+              padding: '3px 8px',
+              fontSize: '10px',
+              fontWeight: 600,
+              cursor: 'pointer',
+              transition: 'all 0.2s'
+            }}
+          >
+            ☁️ Cloud
+          </button>
+        </div>
 
         {copyFeedback && (
           <span

@@ -40,7 +40,10 @@ const api = {
   },
   onClearContent: (callback: () => void): void => {
     ipcRenderer.on('clear-content', () => callback())
-  }
+  },
+  // AI Mode
+  setAIMode: (mode: string): Promise<boolean> => ipcRenderer.invoke('set-ai-mode', mode),
+  getAIMode: (): Promise<string> => ipcRenderer.invoke('get-ai-mode')
 }
 
 if (process.contextIsolated) {

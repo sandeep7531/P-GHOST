@@ -126,6 +126,17 @@ function setupIPC(): void {
     mainWindow?.setResizable(resizable)
     return true
   })
+
+  // AI Mode toggle
+  let currentAIMode = 'hybrid' // default
+
+  ipcMain.handle('set-ai-mode', (_event, mode: string) => {
+    currentAIMode = mode
+    console.log(`🎯 AI mode changed to: ${mode}`)
+    return true
+  })
+
+  ipcMain.handle('get-ai-mode', () => currentAIMode)
 }
 
 // ============================================================

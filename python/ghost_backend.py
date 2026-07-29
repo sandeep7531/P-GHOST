@@ -358,6 +358,18 @@ async def websocket_handler(websocket):
                     run_llm(question)
 
                 # ─────────────────────────────────
+                # 🎯 SET AI MODE (local/hybrid/cloud)
+                # ─────────────────────────────────
+                elif msg_type == "set_ai_mode":
+                    mode = data.get("mode", "hybrid")
+                    success = llm.set_ai_mode(mode)
+                    await websocket.send(json.dumps({
+                        "type": "ai_mode_changed",
+                        "mode": mode,
+                        "success": success
+                    }))
+
+                # ─────────────────────────────────
                 # ⏸️ PAUSE LISTENING
                 # ─────────────────────────────────
                 elif msg_type == "pause_listening":

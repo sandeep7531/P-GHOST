@@ -23,6 +23,8 @@ interface GhostAPI {
   onTogglePause: (callback: () => void) => void
   onFocusTestBox: (callback: () => void) => void
   onClearContent: (callback: () => void) => void
+  setAIMode: (mode: string) => Promise<boolean>
+  getAIMode: () => Promise<string>
 }
 
 declare global {
