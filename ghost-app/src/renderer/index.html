@@ -1,12 +1,31 @@
 <!doctype html>
 <html>
-  <head>
-    <meta charset="UTF-8" />
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self' 'unsafe-inline' data:; connect-src 'self' ws://localhost:* http://localhost:*; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'" />
-    <title>Ghost</title>
-  </head>
-  <body>
-    <div id="root"></div>
-    <script type="module" src="/src/main.tsx"></script>
-  </body>
+
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy"
+    content="default-src 'self' 'unsafe-inline' data:; connect-src 'self' ws://localhost:* http://localhost:*; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'" />
+  <title>Ghost</title>
+</head>
+
+<body>
+  <style>
+    html,
+    body {
+      margin: 0;
+      padding: 0;
+      background: transparent !important;
+      background-color: transparent !important;
+    }
+
+    #root {
+      background: transparent !important;
+      width: 100vw;
+      height: 100vh;
+    }
+  </style>
+  <div id="root"></div>
+  <script type="module" src="/src/main.tsx"></script>
+</body>
+
 </html>

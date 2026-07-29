@@ -44,6 +44,9 @@ const api = {
   onShowNextQuestion: (callback: () => void): void => {
     ipcRenderer.on('show-next-question', () => callback())
   },
+  onOpacityChange: (callback: (action: string) => void): void => {
+    ipcRenderer.on('opacity-change', (_event, action) => callback(action))
+  },
   // AI Mode
   setAIMode: (mode: string): Promise<boolean> => ipcRenderer.invoke('set-ai-mode', mode),
   getAIMode: (): Promise<string> => ipcRenderer.invoke('get-ai-mode')

@@ -24,6 +24,7 @@ function createWindow(): void {
     hasShadow: false,
     resizable: true,
     movable: true,
+    backgroundColor: '#00000000',
 
     // Stealth behavior
     alwaysOnTop: true,
@@ -215,6 +216,23 @@ function registerShortcuts(): void {
       }
     })
   }
+  // 🔆 Cmd+Shift+= → Increase opacity (more visible)
+  globalShortcut.register('CommandOrControl+Shift+=', () => {
+    console.log('🔆 Increase opacity')
+    mainWindow?.webContents.send('opacity-change', 'increase')
+  })
+
+  // 🌑 Cmd+Shift+- → Decrease opacity (more transparent)
+  globalShortcut.register('CommandOrControl+Shift+-', () => {
+    console.log('🌑 Decrease opacity')
+    mainWindow?.webContents.send('opacity-change', 'decrease')
+  })
+
+  // 🎯 Cmd+Shift+0 → Reset opacity to default
+  globalShortcut.register('CommandOrControl+Shift+0', () => {
+    console.log('🎯 Reset opacity')
+    mainWindow?.webContents.send('opacity-change', 'reset')
+  })
 
   console.log('⌨️  Keyboard shortcuts registered:')
   console.log('   Cmd+Shift+H → Hide/Show overlay')
@@ -224,6 +242,9 @@ function registerShortcuts(): void {
   console.log('   Cmd+Shift+P → Pause/Resume listening')
   console.log('   Cmd+Shift+F → Focus test box')
   console.log('   Cmd+Shift+K → Clear transcript+answer')
+  console.log('   Cmd+Shift+= → Increase opacity')
+  console.log('   Cmd+Shift+- → Decrease opacity')
+  console.log('   Cmd+Shift+0 → Reset opacity')
   if (is.dev) console.log('   Cmd+Shift+D → Toggle DevTools')
 }
 

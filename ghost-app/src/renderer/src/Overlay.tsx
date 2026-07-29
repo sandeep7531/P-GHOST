@@ -27,7 +27,7 @@ interface ConversationItem {
 }
 
 // ============================================================
-// 🎨 GHOST OVERLAY (ChatGPT-Style History)
+// 🎨 GHOST OVERLAY (Apple Clear + Opacity Control)
 // ============================================================
 function Overlay(): JSX.Element {
   const navigate = useNavigate()
@@ -39,6 +39,7 @@ function Overlay(): JSX.Element {
   const [stealthOn, setStealthOn] = useState<boolean>(true)
   const [copyFeedback, setCopyFeedback] = useState<string>('')
   const [aiMode, setAIMode] = useState<'local' | 'hybrid' | 'cloud'>('hybrid')
+  const [opacity, setOpacity] = useState<number>(0.65)
 
   // Conversation history
   const [conversations, setConversations] = useState<ConversationItem[]>([])
@@ -68,10 +69,11 @@ function Overlay(): JSX.Element {
   const statusRef = useRef<'idle' | 'listening' | 'thinking'>('idle')
   const isPausedRef = useRef<boolean>(false)
   const isAtTopRef = useRef<boolean>(true)
+  const opacityRef = useRef<number>(0.65)
 
   // Debounce
   const shortcutTimestampsRef = useRef<{ [key: string]: number }>({
-    regenerate: 0, copy: 0, pause: 0, clear: 0, focus: 0, chatQuestion: 0, showNext: 0
+    regenerate: 0, copy: 0, pause: 0, clear: 0, focus: 0, chatQuestion: 0, showNext: 0, opacity: 0
   })
   const DEBOUNCE_MS = 1500
 
@@ -94,6 +96,7 @@ function Overlay(): JSX.Element {
   useEffect(() => { conversationsRef.current = conversations }, [conversations])
   useEffect(() => { statusRef.current = status }, [status])
   useEffect(() => { isPausedRef.current = isPaused }, [isPaused])
+  useEffect(() => { opacityRef.current = opacity }, [opacity])
 
   // ============================================================
   // 📸 INITIAL STATE
@@ -105,6 +108,15 @@ function Overlay(): JSX.Element {
         setAIMode(mode as 'local' | 'hybrid' | 'cloud')
       }
     })
+
+    // Load saved opacity from localStorage
+    const savedOpacity = localStorage.getItem('ghost-opacity')
+    if (savedOpacity) {
+      const val = parseFloat(savedOpacity)
+      if (val >= 0.3 && val <= 1.0) {
+        setOpacity(val)
+      }
+    }
   }, [])
 
   // ============================================================
@@ -150,18 +162,15 @@ function Overlay(): JSX.Element {
           break
 
         case 'transcript':
-          // New question from voice — add to history
           currentStreamingId = addNewConversation(msg.text, 'voice')
           setStatus('thinking')
           break
 
         case 'answer_start':
           setStatus('thinking')
-          // If there's no current streaming ID, create a new item
           if (!currentStreamingId) {
             currentStreamingId = addNewConversation(msg.question, 'chat')
           }
-          // Update mode/engine info
           if (msg.mode || msg.engine) {
             const id = currentStreamingId
             setConversations((prev) =>
@@ -424,6 +433,26 @@ function Overlay(): JSX.Element {
       setCopyFeedback('📥 Latest question')
       setTimeout(() => setCopyFeedback(''), 1200)
     })
+
+    // ✨ Opacity control
+    window.api.onOpacityChange((action: string) => {
+      let newOpacity = opacityRef.current
+
+      if (action === 'increase') {
+        newOpacity = Math.min(1.0, opacityRef.current + 0.1)
+      } else if (action === 'decrease') {
+        newOpacity = Math.max(0.3, opacityRef.current - 0.1)
+      } else if (action === 'reset') {
+        newOpacity = 0.65
+      }
+
+      setOpacity(newOpacity)
+      localStorage.setItem('ghost-opacity', newOpacity.toString())
+
+      const percentage = Math.round(newOpacity * 100)
+      setCopyFeedback(`✨ Opacity: ${percentage}%`)
+      setTimeout(() => setCopyFeedback(''), 1500)
+    })
   }, [])
 
   // ============================================================
@@ -582,22 +611,23 @@ function Overlay(): JSX.Element {
   }
 
   // ============================================================
-  // 🎨 RENDER
+  // 🎨 RENDER (Apple Clear Theme)
   // ============================================================
   return (
     <div
       style={{
         width: '100vw',
         height: '100vh',
-        background: 'rgba(15, 15, 25, 0.92)',
-        borderRadius: '12px',
+        background: `rgba(0, 0, 0, ${opacity * 0.5})`,
+        borderRadius: '14px',
         overflow: 'hidden',
         display: 'flex',
         flexDirection: 'column',
         color: 'white',
         fontFamily: '-apple-system, BlinkMacSystemFont, sans-serif',
-        border: '1px solid rgba(255, 255, 255, 0.1)',
-        backdropFilter: 'blur(20px)'
+        border: '1px solid rgba(255, 255, 255, 0.2)',
+        boxShadow: '0 8px 32px rgba(0, 0, 0, 0.5)',
+        textShadow: '0 1px 3px rgba(0, 0, 0, 0.9)'
       }}
     >
       {/* HEADER */}
@@ -605,8 +635,8 @@ function Overlay(): JSX.Element {
         style={
           {
             height: '40px',
-            background: 'rgba(255, 255, 255, 0.05)',
-            borderBottom: '1px solid rgba(255, 255, 255, 0.08)',
+            background: 'linear-gradient(180deg, rgba(255, 255, 255, 0.08) 0%, rgba(255, 255, 255, 0.03) 100%)',
+            borderBottom: '1px solid rgba(255, 255, 255, 0.1)',
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'space-between',
@@ -626,13 +656,14 @@ function Overlay(): JSX.Element {
               style={{
                 fontSize: '10px',
                 color: '#5c6cff',
-                background: 'rgba(92, 108, 255, 0.1)',
+                background: 'rgba(92, 108, 255, 0.15)',
                 padding: '2px 8px',
                 borderRadius: '10px',
                 marginLeft: '4px',
                 whiteSpace: 'nowrap',
                 overflow: 'hidden',
-                textOverflow: 'ellipsis'
+                textOverflow: 'ellipsis',
+                backdropFilter: 'blur(10px)'
               }}
             >
               {sessionData.company} · {sessionData.position}
@@ -650,8 +681,8 @@ function Overlay(): JSX.Element {
         style={
           {
             height: '36px',
-            background: 'rgba(255, 255, 255, 0.02)',
-            borderBottom: '1px solid rgba(255, 255, 255, 0.05)',
+            background: 'linear-gradient(180deg, rgba(255, 255, 255, 0.04) 0%, rgba(255, 255, 255, 0.01) 100%)',
+            borderBottom: '1px solid rgba(255, 255, 255, 0.06)',
             display: 'flex',
             alignItems: 'center',
             gap: '8px',
@@ -671,7 +702,8 @@ function Overlay(): JSX.Element {
             padding: '4px 10px',
             fontSize: '11px',
             fontWeight: 500,
-            cursor: 'pointer'
+            cursor: 'pointer',
+            backdropFilter: 'blur(10px)'
           }}
           title={stealthOn ? 'Invisible in screenshots' : 'Visible in screenshots'}
         >
@@ -685,14 +717,15 @@ function Overlay(): JSX.Element {
             navigate('/')
           }}
           style={{
-            background: 'rgba(255, 255, 255, 0.05)',
+            background: 'rgba(255, 255, 255, 0.08)',
             color: 'rgba(255, 255, 255, 0.7)',
             border: '1px solid rgba(255, 255, 255, 0.15)',
             borderRadius: '6px',
             padding: '4px 10px',
             fontSize: '11px',
             fontWeight: 500,
-            cursor: 'pointer'
+            cursor: 'pointer',
+            backdropFilter: 'blur(10px)'
           }}
           title="Setup"
         >
@@ -707,9 +740,10 @@ function Overlay(): JSX.Element {
             gap: '2px',
             marginLeft: '4px',
             padding: '2px',
-            background: 'rgba(255, 255, 255, 0.05)',
+            background: 'rgba(255, 255, 255, 0.06)',
             border: '1px solid rgba(255, 255, 255, 0.1)',
-            borderRadius: '6px'
+            borderRadius: '6px',
+            backdropFilter: 'blur(10px)'
           }}
         >
           {(['local', 'hybrid', 'cloud'] as const).map((mode) => (
@@ -757,7 +791,7 @@ function Overlay(): JSX.Element {
               }
             }}
             style={{
-              background: 'rgba(255, 71, 87, 0.1)',
+              background: 'rgba(255, 71, 87, 0.15)',
               color: '#ff4757',
               border: '1px solid rgba(255, 71, 87, 0.3)',
               borderRadius: '6px',
@@ -765,7 +799,8 @@ function Overlay(): JSX.Element {
               fontSize: '10px',
               fontWeight: 500,
               cursor: 'pointer',
-              marginLeft: '4px'
+              marginLeft: '4px',
+              backdropFilter: 'blur(10px)'
             }}
             title="Clear all history"
           >
@@ -797,7 +832,7 @@ function Overlay(): JSX.Element {
         <div
           onClick={scrollToTop}
           style={{
-            background: 'linear-gradient(90deg, #ff4757 0%, #ff6b7a 100%)',
+            background: 'linear-gradient(90deg, rgba(255, 71, 87, 0.9) 0%, rgba(255, 107, 122, 0.9) 100%)',
             color: 'white',
             padding: '8px 15px',
             fontSize: '11px',
@@ -807,7 +842,8 @@ function Overlay(): JSX.Element {
             alignItems: 'center',
             justifyContent: 'space-between',
             flexShrink: 0,
-            animation: 'pulse 2s infinite'
+            backdropFilter: 'blur(15px)',
+            borderBottom: '1px solid rgba(255, 71, 87, 0.5)'
           }}
         >
           <span>
@@ -835,9 +871,11 @@ function Overlay(): JSX.Element {
             style={{
               marginBottom: '14px',
               padding: '12px',
-              background: 'rgba(92, 108, 255, 0.08)',
+              background: 'linear-gradient(135deg, rgba(92, 108, 255, 0.1) 0%, rgba(92, 108, 255, 0.05) 100%)',
               border: '1px solid rgba(92, 108, 255, 0.25)',
-              borderRadius: '8px'
+              borderRadius: '10px',
+              backdropFilter: 'blur(15px)',
+              boxShadow: '0 4px 12px rgba(92, 108, 255, 0.1)'
             }}
           >
             <div
@@ -887,7 +925,8 @@ function Overlay(): JSX.Element {
                 resize: 'vertical',
                 fontFamily: 'inherit',
                 boxSizing: 'border-box',
-                lineHeight: 1.5
+                lineHeight: 1.5,
+                backdropFilter: 'blur(10px)'
               }}
             />
 
@@ -939,7 +978,8 @@ function Overlay(): JSX.Element {
               color: '#a0aaff',
               fontSize: '11px',
               fontWeight: 600,
-              cursor: 'pointer'
+              cursor: 'pointer',
+              backdropFilter: 'blur(10px)'
             }}
           >
             🧪 Show Test Box
@@ -965,14 +1005,18 @@ function Overlay(): JSX.Element {
               key={item.id}
               style={{
                 marginBottom: '16px',
-                padding: '12px',
+                padding: '14px',
                 background:
                   index === 0
-                    ? 'rgba(92, 108, 255, 0.05)'
-                    : 'rgba(255, 255, 255, 0.02)',
-                border: `1px solid ${index === 0 ? 'rgba(92, 108, 255, 0.2)' : 'rgba(255, 255, 255, 0.05)'
+                    ? 'linear-gradient(135deg, rgba(92, 108, 255, 0.08) 0%, rgba(92, 108, 255, 0.03) 100%)'
+                    : 'linear-gradient(135deg, rgba(255, 255, 255, 0.04) 0%, rgba(255, 255, 255, 0.01) 100%)',
+                border: `1px solid ${index === 0 ? 'rgba(92, 108, 255, 0.25)' : 'rgba(255, 255, 255, 0.08)'
                   }`,
-                borderRadius: '10px'
+                borderRadius: '12px',
+                backdropFilter: 'blur(20px)',
+                boxShadow: index === 0
+                  ? '0 4px 20px rgba(92, 108, 255, 0.15), inset 0 1px 0 rgba(255, 255, 255, 0.05)'
+                  : '0 2px 8px rgba(0, 0, 0, 0.15), inset 0 1px 0 rgba(255, 255, 255, 0.03)'
               }}
             >
               {/* Question Header */}
@@ -1090,7 +1134,8 @@ function Overlay(): JSX.Element {
                       resize: 'vertical',
                       fontFamily: 'inherit',
                       boxSizing: 'border-box',
-                      marginBottom: '6px'
+                      marginBottom: '6px',
+                      backdropFilter: 'blur(10px)'
                     }}
                   />
                   <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '6px' }}>
@@ -1142,7 +1187,8 @@ function Overlay(): JSX.Element {
                     borderRadius: '6px',
                     marginBottom: '10px',
                     userSelect: 'text',
-                    WebkitUserSelect: 'text'
+                    WebkitUserSelect: 'text',
+                    backdropFilter: 'blur(5px)'
                   } as React.CSSProperties}
                 >
                   {item.question}
@@ -1198,7 +1244,8 @@ function Overlay(): JSX.Element {
                   borderRadius: '6px',
                   minHeight: item.answer ? 'auto' : '40px',
                   userSelect: 'text',
-                  WebkitUserSelect: 'text'
+                  WebkitUserSelect: 'text',
+                  backdropFilter: 'blur(5px)'
                 } as React.CSSProperties}
               >
                 {item.answer ? (
@@ -1218,7 +1265,7 @@ function Overlay(): JSX.Element {
       <div
         style={{
           height: '26px',
-          background: 'rgba(255, 255, 255, 0.03)',
+          background: 'linear-gradient(0deg, rgba(255, 255, 255, 0.03) 0%, rgba(255, 255, 255, 0.01) 100%)',
           borderTop: '1px solid rgba(255, 255, 255, 0.08)',
           display: 'flex',
           alignItems: 'center',
@@ -1233,7 +1280,7 @@ function Overlay(): JSX.Element {
           {connected ? '🟢 Connected' : '🔴 Offline'}
           {conversations.length > 0 && ` · ${conversations.length} Q&A`}
         </span>
-        <span>⌘⇧H hide · ⌘⇧N latest · ⌘⇧R regen · ⌘⇧K clear</span>
+        <span>⌘⇧N latest · ⌘⇧R regen · ⌘⇧=/-/0 opacity</span>
       </div>
     </div>
   )

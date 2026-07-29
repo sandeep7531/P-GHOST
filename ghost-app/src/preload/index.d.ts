@@ -26,6 +26,8 @@ interface GhostAPI {
   setAIMode: (mode: string) => Promise<boolean>
   getAIMode: () => Promise<string>
   onShowNextQuestion: (callback: () => void) => void
+  onOpacityChange: (callback: (action: string) => void) => void
+
 }
 
 declare global {
